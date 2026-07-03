@@ -11,8 +11,8 @@ export function getReadClient() {
   return createClient({ chain: studionet });
 }
 
-export function getProviderClient(provider: EIP1193Provider) {
-  return createClient({ chain: studionet, provider: provider as any });
+export function getProviderClient(provider: EIP1193Provider, account: `0x${string}`) {
+  return createClient({ chain: studionet, provider: provider as any, account });
 }
 
 export function getContractAddress(): `0x${string}` {
@@ -44,10 +44,15 @@ export async function writeContract(
   args: AnyArgs,
   value?: bigint
 ): Promise<string> {
-  const client = getProviderClient(provider);
-  const address = getContractAddress();
+  // Derive the active account from the provider so genlayer-js knows who is signing
+  const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
+  if (!accounts || accounts.length === 0) throw new Error("No accounts found. Is your wallet unlocked?");
+  const account = accounts[0] as `0x${string}`;
+
+  const client = getProviderClient(provider, account);
+  const contractAddress = getContractAddress();
   const hash = await (client as any).writeContract({
-    address,
+    address: contractAddress,
     functionName,
     args,
     value: value ?? BigInt(0),
