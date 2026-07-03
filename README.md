@@ -2,6 +2,7 @@
 
 **GenLayer-powered bid evaluation that awards the best-value proposal — not the cheapest one.**
 
+> Live: https://procheck-theta.vercel.app  
 > Contact: walterolaolu@gmail.com
 
 ---
@@ -18,13 +19,13 @@ The result? Contracts go to the cheapest bidder. And the cheapest bidder is rare
 
 ## What It Does
 
-Procurement Consensus is a full-stack dApp built on GenLayer StudioNet. It lets buyers create procurement rounds with weighted evaluation criteria, accept structured bids from suppliers, and then trigger a validator consensus evaluation that produces a canonical award recommendation.
+Procurement Consensus is a full-stack dApp built on GenLayer StudioNet. Buyers create procurement rounds with weighted evaluation criteria, accept structured bids from suppliers, then trigger a validator consensus evaluation that produces a canonical award recommendation.
 
-The whole lifecycle — round creation, bid submission, evaluation, appeal, finalization — is on-chain.
+The entire lifecycle — round creation, bid submission, evaluation, appeal, finalization — is on-chain.
 
 **Core flow:**
 
-1. Buyer creates a round with a title, category, budget range, criteria weights (e.g. 40% quality, 25% price, 20% delivery, 15% compliance), mandatory requirements, and a bid deadline
+1. Buyer creates a round with title, category, budget range, criteria weights (e.g. 40% quality, 25% price, 20% delivery, 15% compliance), mandatory requirements, and a bid deadline
 2. Suppliers submit bid packets: price, delivery timeline, technical summary, warranty terms, compliance statement, and evidence URLs
 3. Buyer closes bids and requests evaluation
 4. GenLayer validators independently evaluate all bids against the criteria and reach consensus on the best-value bid
@@ -107,8 +108,27 @@ GenLayer validators review the appeal against the original evaluation. If the ap
 | Intelligent Contract | Python, GenLayer SDK (`gl.vm.run_nondet_unsafe`, `gl.nondet.exec_prompt`) |
 | Frontend | Next.js 15 (App Router), TypeScript, Tailwind CSS |
 | Chain client | `genlayer-js` |
-| Wallet | Auto-generated localStorage private key (StudioNet demo wallet) |
+| Wallet | Injected EVM wallets via EIP-6963 (MetaMask, Rabby, and any compatible wallet) |
 | Network | GenLayer StudioNet — chain ID 61999, RPC `https://studio.genlayer.com/api` |
+
+---
+
+## Wallet Architecture
+
+The app uses **EIP-6963** for injected wallet detection — the modern standard that supports multiple wallets installed simultaneously.
+
+**How it works:**
+
+- On load, the app listens for `eip6963:announceProvider` events and collects all available wallet providers
+- If **one wallet** is detected, clicking "Connect Wallet" connects directly — no modal
+- If **multiple wallets** are detected (e.g. both MetaMask and Rabby), a wallet selection modal appears so the user picks which to use
+- If **no wallet** is detected, the modal shows install links for MetaMask and Rabby
+- Falls back to `window.ethereum` for wallets that do not yet support EIP-6963
+- Persists the selected wallet across page refreshes using `localStorage` (reconnects silently on return if the wallet is already unlocked)
+- Listens for `accountsChanged`, `chainChanged`, and `disconnect` events and updates the UI automatically
+- Detects wrong network and shows a **Switch Network** button that adds/switches to GenLayer StudioNet automatically
+
+**Supported wallets:** MetaMask, Rabby, and any injected EVM wallet that implements EIP-1193 or EIP-6963.
 
 ---
 
@@ -117,22 +137,24 @@ GenLayer validators review the appeal against the original evaluation. If the ap
 ```
 ProCheck/
 ├── contract/
-│   └── procurement_consensus.py   # Intelligent Contract
+│   └── procurement_consensus.py       # Intelligent Contract
 ├── src/
 │   ├── app/
-│   │   ├── page.tsx               # Landing page
+│   │   ├── page.tsx                   # Landing page
 │   │   ├── layout.tsx
 │   │   ├── rounds/
-│   │   │   ├── page.tsx           # Bid Board — all rounds
-│   │   │   ├── create/page.tsx    # Create procurement round
+│   │   │   ├── page.tsx               # Bid Board — all rounds
+│   │   │   ├── create/page.tsx        # Create procurement round
 │   │   │   └── [roundId]/
-│   │   │       ├── page.tsx       # Round detail + buyer actions
+│   │   │       ├── page.tsx           # Round detail + buyer actions
 │   │   │       ├── submit-bid/page.tsx
 │   │   │       ├── evaluation/page.tsx
 │   │   │       └── appeal/page.tsx
-│   │   └── profile/page.tsx       # My rounds + my bids
+│   │   └── profile/page.tsx           # My rounds + my bids
 │   ├── components/
-│   │   ├── ui/                    # Button, Badge, Toast
+│   │   ├── ui/                        # Button, Badge, Toast
+│   │   ├── WalletSelectModal.tsx      # EIP-6963 wallet picker
+│   │   ├── Navbar.tsx                 # Connect Wallet + wrong-network banner
 │   │   ├── ProcurementRoundCard.tsx
 │   │   ├── BidPacketPanel.tsx
 │   │   ├── BidComparisonMatrix.tsx
@@ -145,25 +167,26 @@ ProCheck/
 │   │   ├── AppealDesk.tsx
 │   │   └── ExplorerLinkCard.tsx
 │   ├── context/
-│   │   └── WalletContext.tsx      # Auto-generate / persist private key
+│   │   └── WalletContext.tsx          # EIP-6963 provider detection + connection management
 │   ├── lib/
-│   │   ├── genlayer.ts            # readContract / writeContract / waitForTransaction
+│   │   ├── genlayer.ts                # readContract / writeContract / waitForTransaction
+│   │   ├── wallet-types.ts            # EIP-1193 and EIP-6963 TypeScript interfaces
 │   │   └── utils.ts
 │   └── types/
-│       └── index.ts               # All shared TypeScript types
+│       └── index.ts                   # All shared TypeScript types
 ```
 
 ---
 
 ## Getting Started
 
-### 1. Install the GenLayer CLI
+### Prerequisites
 
-```bash
-npm install -g genlayer
-```
+- Node.js 18+
+- A compatible EVM wallet: [MetaMask](https://metamask.io) or [Rabby](https://rabby.io)
+- GenLayer CLI: `npm install -g genlayer`
 
-### 2. Deploy the contract
+### 1. Deploy the contract
 
 ```bash
 genlayer deploy contract/procurement_consensus.py --network studionet
@@ -171,7 +194,7 @@ genlayer deploy contract/procurement_consensus.py --network studionet
 
 Copy the contract address from the output.
 
-### 3. Configure environment
+### 2. Configure environment
 
 Create `.env.local` in the project root:
 
@@ -183,7 +206,7 @@ NEXT_PUBLIC_GENLAYER_EXPLORER_URL=https://explorer-studio.genlayer.com
 NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS=0xYOUR_CONTRACT_ADDRESS
 ```
 
-### 4. Run the frontend
+### 3. Run the frontend
 
 ```bash
 npm install
@@ -192,41 +215,39 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+### 4. Connect your wallet
+
+Click **Connect Wallet** in the navbar. If you are on the wrong network, a banner will appear — click **Switch Network** to add and switch to GenLayer StudioNet automatically (chain ID 61999).
+
 ---
 
 ## Running the Ambulance Demo
 
-The built-in demo scenario showcases everything: competing bids with different tradeoffs, a non-lowest-price winner, and the reasoning behind it.
+The built-in demo scenario showcases everything: competing bids with different tradeoffs, a non-lowest-price winner, and the reasoning behind it. You need four wallet accounts — one buyer, three suppliers.
 
-**Setup:**
-- Open GenLayer Studio or connect to StudioNet (chain ID 61999)
-- You'll need three separate wallet sessions (open three browser tabs, each generates a fresh wallet on first connect)
-
-**Step 1 — Create the round (Wallet A — the buyer)**
+**Step 1 — Create the round (Buyer)**
 - Title: `Ambulance Fleet Procurement`
 - Category: `Medical Transport`
 - Budget: 90,000 – 130,000 GEN
 - Weights: Quality 40%, Price 25%, Delivery 20%, Compliance 15%
-- Deadline: 7 days
 
-**Step 2 — Open for bids, then submit three competing bids**
+**Step 2 — Submit three competing bids**
 
-| Bid | Wallet | Price | Signal |
-|---|---|---|---|
-| Bid 1 | Wallet B | 85,000 GEN | Cheapest — but weak warranty, vague references |
-| Bid 2 | Wallet C | 112,000 GEN | Strong spec, 45-day delivery, complete warranty and compliance |
-| Bid 3 | Wallet D | 127,000 GEN | Strong spec but incomplete compliance evidence |
+| Bid | Price | Signal |
+|---|---|---|
+| Bid 1 | 85,000 GEN | Cheapest — weak warranty, vague compliance, slow delivery |
+| Bid 2 | 112,000 GEN | Strong spec, 45-day delivery, complete warranty and compliance |
+| Bid 3 | 127,500 GEN | Strong spec, expensive, only one evidence URL |
 
-**Step 3 — Close bids and request evaluation (Wallet A)**
-- GenLayer validators compare all three bids against the criteria
-- Takes 30–90 seconds
-- Expected result: **Bid 2 wins** with verdict `award_recommended` and reason code `best_value_not_lowest_price`
+**Step 3 — Close bids and request evaluation**
 
-**Step 4 — Optionally file an appeal (Wallet B or C)**
-- Use `price_miscalculation` or `technical_spec_misread` as the basis
-- Validators review and return `appeal_granted` or `appeal_rejected`
+GenLayer validators compare all three bids against the criteria. Takes 30–90 seconds.
 
-**Step 5 — Buyer finalizes the recommendation**
+**Expected result:** Bid 2 wins — `award_recommended`, reason `best_value_not_lowest_price`
+
+**Step 4 — Optionally file and review an appeal**
+
+**Step 5 — Buyer finalizes the recommendation on-chain**
 
 ---
 
