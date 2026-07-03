@@ -11,9 +11,7 @@ export function getReadClient() {
   return createClient({ chain: studionet });
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getProviderClient(provider: EIP1193Provider) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return createClient({ chain: studionet, provider: provider as any });
 }
 
@@ -29,7 +27,6 @@ export function getContractAddress(): `0x${string}` {
 export async function readContract<T>(functionName: string, args: AnyArgs = []): Promise<T> {
   const client = getReadClient();
   const address = getContractAddress();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const result = await (client as any).readContract({ address, functionName, args });
   if (typeof result === "string") {
     try {
@@ -49,7 +46,6 @@ export async function writeContract(
 ): Promise<string> {
   const client = getProviderClient(provider);
   const address = getContractAddress();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hash = await (client as any).writeContract({
     address,
     functionName,
@@ -65,7 +61,6 @@ export async function waitForTransaction(
   status: TransactionStatus = TransactionStatus.ACCEPTED
 ) {
   const client = getReadClient();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (client as any).waitForTransactionReceipt({
     hash,
     status,
