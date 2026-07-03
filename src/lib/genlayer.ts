@@ -1,4 +1,3 @@
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyArgs = any[];
 
 import { createClient, createAccount } from "genlayer-js";
@@ -34,7 +33,6 @@ export function getContractAddress(): `0x${string}` {
 export async function readContract<T>(functionName: string, args: AnyArgs = []): Promise<T> {
   const client = getReadClient();
   const address = getContractAddress();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const result = await (client as any).readContract({
     address,
     functionName,
@@ -59,7 +57,6 @@ export async function writeContract(
 ): Promise<string> {
   const client = getWriteClient(privateKey);
   const address = getContractAddress();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hash = await (client as any).writeContract({
     address,
     functionName,
@@ -75,7 +72,6 @@ export async function waitForTransaction(
   status: TransactionStatus = TransactionStatus.ACCEPTED
 ) {
   const client = getWriteClient(privateKey);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (client as any).waitForTransactionReceipt({
     hash,
     status,
