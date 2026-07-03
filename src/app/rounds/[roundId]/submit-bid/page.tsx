@@ -17,7 +17,7 @@ export default function SubmitBidPage() {
   const params = useParams();
   const router = useRouter();
   const roundId = Number(params.roundId);
-  const { address, account, isConnected, connect } = useWallet();
+  const { address, provider, isConnected, connect } = useWallet();
   const { showToast } = useToast();
 
   const [round, setRound] = useState<ProcurementRound | null>(null);
@@ -62,7 +62,7 @@ export default function SubmitBidPage() {
       }
     };
     fetch();
-  }, [roundId, address]);
+  }, [roundId, address]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addUrl = () => {
     if (evidenceUrls.length < 8) setEvidenceUrls((p) => [...p, ""]);
@@ -87,7 +87,7 @@ export default function SubmitBidPage() {
   };
 
   const handleSubmit = async () => {
-    if (!isConnected || !account) {
+    if (!isConnected || !provider) {
       showToast("error", "Please connect your wallet");
       return;
     }
@@ -102,7 +102,7 @@ export default function SubmitBidPage() {
     try {
       let hash: string;
       if (existingBid) {
-        hash = await writeContract(account.privateKey, "revise_bid", [
+        hash = await writeContract(provider, "revise_bid", [
           existingBid.bid_id,
           parseInt(price),
           parseInt(deliveryDays),
@@ -112,7 +112,7 @@ export default function SubmitBidPage() {
           JSON.stringify(urls),
         ]);
       } else {
-        hash = await writeContract(account.privateKey, "submit_bid", [
+        hash = await writeContract(provider, "submit_bid", [
           roundId,
           parseInt(price),
           parseInt(deliveryDays),
@@ -125,7 +125,7 @@ export default function SubmitBidPage() {
 
       setTxHash(hash);
       showToast("info", existingBid ? "Bid revision submitted" : "Bid submitted", "Waiting for confirmation…");
-      await waitForTransaction(account.privateKey, hash as `0x${string}`);
+      await waitForTransaction(hash as `0x${string}`);
       showToast("success", existingBid ? "Bid revised successfully!" : "Bid submitted successfully!");
       router.push(`/rounds/${roundId}`);
     } catch (err) {
@@ -197,7 +197,7 @@ export default function SubmitBidPage() {
           {!isConnected && (
             <div className="panel border-award-gold/30 p-4 mb-4 flex items-center justify-between gap-3">
               <p className="text-sm text-paper-white">Connect wallet to submit</p>
-              <Button size="sm" onClick={connect}>Connect</Button>
+              <Button size="sm" onClick={connect}>Connect Wallet</Button>
             </div>
           )}
 

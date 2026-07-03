@@ -21,7 +21,7 @@ export default function RoundDetailPage() {
   const params = useParams();
   const router = useRouter();
   const roundId = Number(params.roundId);
-  const { address, account, isConnected } = useWallet();
+  const { address, provider, isConnected } = useWallet();
   const { showToast } = useToast();
 
   const [round, setRound] = useState<ProcurementRound | null>(null);
@@ -57,18 +57,18 @@ export default function RoundDetailPage() {
 
   useEffect(() => {
     fetchAll();
-  }, [roundId]);
+  }, [roundId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isBuyer = address && round && round.buyer.toLowerCase() === address.toLowerCase();
 
   const doAction = async (fn: string, args: unknown[], successMsg: string) => {
-    if (!account) return;
+    if (!provider) return;
     setActionLoading(true);
     try {
-      const hash = await writeContract(account.privateKey, fn, args);
+      const hash = await writeContract(provider, fn, args);
       setLastTx(hash);
       showToast("info", "Transaction submitted", "Waiting for confirmation…");
-      await waitForTransaction(account.privateKey, hash);
+      await waitForTransaction(hash);
       showToast("success", successMsg);
       await fetchAll();
     } catch (err) {
@@ -252,13 +252,11 @@ export default function RoundDetailPage() {
 
         {/* Sidebar */}
         <div className="space-y-4">
-          {/* Timeline */}
           <div className="panel p-5">
             <h3 className="font-display font-semibold text-sm text-paper-white mb-4">Round Trail</h3>
             <AwardTrailTimeline currentStatus={round.status} />
           </div>
 
-          {/* Explorer links */}
           {lastTx && (
             <div className="panel p-4">
               <h3 className="label text-xs mb-3">On-Chain</h3>
@@ -274,7 +272,6 @@ export default function RoundDetailPage() {
             </div>
           )}
 
-          {/* Links */}
           <div className="panel p-4 space-y-2">
             {round.status === "open_for_bids" && (
               <Link href={`/rounds/${roundId}/submit-bid`} className="block">

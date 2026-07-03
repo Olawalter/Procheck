@@ -19,7 +19,7 @@ export default function AppealPage() {
   const params = useParams();
   const router = useRouter();
   const roundId = Number(params.roundId);
-  const { address, account, isConnected } = useWallet();
+  const { address, provider, isConnected } = useWallet();
   const { showToast } = useToast();
 
   const [round, setRound] = useState<ProcurementRound | null>(null);
@@ -49,18 +49,18 @@ export default function AppealPage() {
 
   useEffect(() => {
     fetchAll();
-  }, [roundId]);
+  }, [roundId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isBuyer = address && round && round.buyer.toLowerCase() === address.toLowerCase();
 
   const requestAppealReview = async () => {
-    if (!account) return;
+    if (!provider) return;
     setReviewing(true);
     try {
-      const hash = await writeContract(account.privateKey, "request_appeal_review", [roundId]);
+      const hash = await writeContract(provider, "request_appeal_review", [roundId]);
       setTxHash(hash);
       showToast("info", "Appeal review requested", "Validators are reviewing…");
-      await waitForTransaction(account.privateKey, hash as `0x${string}`);
+      await waitForTransaction(hash as `0x${string}`);
       showToast("success", "Appeal review complete!");
       await fetchAll();
     } catch (err) {
@@ -105,13 +105,10 @@ export default function AppealPage() {
         <Scale size={20} className="text-award-gold" />
         <div>
           <h1 className="font-display font-bold text-2xl text-paper-white">Appeal Desk</h1>
-          {round && (
-            <p className="text-sm text-slate-grey mt-0.5">{round.title}</p>
-          )}
+          {round && <p className="text-sm text-slate-grey mt-0.5">{round.title}</p>}
         </div>
       </div>
 
-      {/* Original evaluation summary */}
       {evaluation && (
         <div className="mb-6">
           <h3 className="label text-xs mb-3">Original Consensus Result</h3>
@@ -125,14 +122,11 @@ export default function AppealPage() {
         </div>
       )}
 
-      {/* Existing appeal */}
       {appeal && (
         <div className="panel p-6 mb-6 border-award-gold/20">
           <div className="flex items-start justify-between mb-4">
             <div>
-              <h3 className="font-display font-semibold text-base text-paper-white">
-                Appeal Filed
-              </h3>
+              <h3 className="font-display font-semibold text-base text-paper-white">Appeal Filed</h3>
               <p className="text-xs text-slate-grey mt-0.5">
                 Basis:{" "}
                 <span className="font-mono text-paper-white">
@@ -155,7 +149,6 @@ export default function AppealPage() {
             <p className="text-sm text-paper-white/80 leading-relaxed">{appeal.statement}</p>
           </div>
 
-          {/* Appeal result */}
           {appealResult && (
             <div
               className={`panel p-4 mt-4 ${
@@ -189,7 +182,6 @@ export default function AppealPage() {
             </div>
           )}
 
-          {/* Buyer can request review */}
           {isBuyer && appeal.status === "filed" && round?.status === "appeal_under_review" && (
             <div className="mt-4">
               <Button
@@ -205,7 +197,6 @@ export default function AppealPage() {
         </div>
       )}
 
-      {/* File new appeal */}
       {!appeal && round?.status === "appeal_window_open" && isConnected && (
         <AppealDesk roundId={roundId} onSuccess={fetchAll} />
       )}

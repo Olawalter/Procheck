@@ -1,24 +1,20 @@
 type AnyArgs = any[];
 
-import { createClient, createAccount } from "genlayer-js";
+import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 import { TransactionStatus } from "genlayer-js/types";
+import type { EIP1193Provider } from "./wallet-types";
 
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS as `0x${string}` | undefined;
 
 export function getReadClient() {
-  return createClient({
-    chain: studionet,
-    account: undefined,
-  });
+  return createClient({ chain: studionet });
 }
 
-export function getWriteClient(privateKey: `0x${string}`) {
-  const account = createAccount(privateKey);
-  return createClient({
-    chain: studionet,
-    account,
-  });
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getProviderClient(provider: EIP1193Provider) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return createClient({ chain: studionet, provider: provider as any });
 }
 
 export function getContractAddress(): `0x${string}` {
@@ -33,12 +29,8 @@ export function getContractAddress(): `0x${string}` {
 export async function readContract<T>(functionName: string, args: AnyArgs = []): Promise<T> {
   const client = getReadClient();
   const address = getContractAddress();
-  const result = await (client as any).readContract({
-    address,
-    functionName,
-    args,
-  });
-  // All contract view methods return JSON strings — parse automatically
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result = await (client as any).readContract({ address, functionName, args });
   if (typeof result === "string") {
     try {
       return JSON.parse(result) as T;
@@ -50,13 +42,14 @@ export async function readContract<T>(functionName: string, args: AnyArgs = []):
 }
 
 export async function writeContract(
-  privateKey: `0x${string}`,
+  provider: EIP1193Provider,
   functionName: string,
   args: AnyArgs,
   value?: bigint
 ): Promise<string> {
-  const client = getWriteClient(privateKey);
+  const client = getProviderClient(provider);
   const address = getContractAddress();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hash = await (client as any).writeContract({
     address,
     functionName,
@@ -66,12 +59,13 @@ export async function writeContract(
   return hash as string;
 }
 
+// waitForTransaction only polls — no signing needed, read client suffices
 export async function waitForTransaction(
-  privateKey: `0x${string}`,
   hash: string,
   status: TransactionStatus = TransactionStatus.ACCEPTED
 ) {
-  const client = getWriteClient(privateKey);
+  const client = getReadClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (client as any).waitForTransactionReceipt({
     hash,
     status,

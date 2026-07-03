@@ -26,7 +26,7 @@ interface AppealDeskProps {
 }
 
 export function AppealDesk({ roundId, onSuccess }: AppealDeskProps) {
-  const { account, isConnected } = useWallet();
+  const { provider, isConnected } = useWallet();
   const { showToast } = useToast();
   const [basis, setBasis] = useState<AppealBasis>("new_compliance_evidence");
   const [statement, setStatement] = useState("");
@@ -39,7 +39,7 @@ export function AppealDesk({ roundId, onSuccess }: AppealDeskProps) {
     setEvidenceUrls((prev) => prev.map((u, idx) => (idx === i ? val : u)));
 
   const handleSubmit = async () => {
-    if (!isConnected || !account) {
+    if (!isConnected || !provider) {
       showToast("error", "Wallet not connected");
       return;
     }
@@ -51,14 +51,14 @@ export function AppealDesk({ roundId, onSuccess }: AppealDeskProps) {
     const urls = evidenceUrls.filter(Boolean);
     setLoading(true);
     try {
-      const hash = await writeContract(account.privateKey, "file_appeal", [
+      const hash = await writeContract(provider, "file_appeal", [
         roundId,
         basis,
         statement,
         JSON.stringify(urls),
       ]);
       showToast("info", "Appeal filed", "Waiting for confirmation…");
-      await waitForTransaction(account.privateKey, hash);
+      await waitForTransaction(hash);
       showToast("success", "Appeal filed successfully");
       onSuccess?.();
     } catch (err) {
@@ -107,7 +107,10 @@ export function AppealDesk({ roundId, onSuccess }: AppealDeskProps) {
           <div className="flex items-center justify-between mb-2">
             <label className="label text-xs">Supporting Evidence URLs</label>
             {evidenceUrls.length < 5 && (
-              <button onClick={addUrl} className="text-xs text-ledger-cyan flex items-center gap-1 hover:text-paper-white">
+              <button
+                onClick={addUrl}
+                className="text-xs text-ledger-cyan flex items-center gap-1 hover:text-paper-white"
+              >
                 <Plus size={12} /> Add URL
               </button>
             )}

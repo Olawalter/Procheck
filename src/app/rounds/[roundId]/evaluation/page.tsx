@@ -20,7 +20,7 @@ import { extractError } from "@/lib/utils";
 export default function EvaluationPage() {
   const params = useParams();
   const roundId = Number(params.roundId);
-  const { address, account, isConnected } = useWallet();
+  const { address, provider, isConnected } = useWallet();
   const { showToast } = useToast();
 
   const [round, setRound] = useState<ProcurementRound | null>(null);
@@ -52,18 +52,18 @@ export default function EvaluationPage() {
 
   useEffect(() => {
     fetchAll();
-  }, [roundId]);
+  }, [roundId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isBuyer = address && round && round.buyer.toLowerCase() === address.toLowerCase();
 
   const requestEvaluation = async () => {
-    if (!account) return;
+    if (!provider) return;
     setEvaluating(true);
     try {
-      const hash = await writeContract(account.privateKey, "request_evaluation", [roundId]);
+      const hash = await writeContract(provider, "request_evaluation", [roundId]);
       setTxHash(hash);
       showToast("info", "Evaluation requested", "GenLayer validators are comparing bids… This may take a minute.");
-      await waitForTransaction(account.privateKey, hash as `0x${string}`);
+      await waitForTransaction(hash as `0x${string}`);
       showToast("success", "Evaluation complete!");
       await fetchAll();
     } catch (err) {
@@ -113,7 +113,6 @@ export default function EvaluationPage() {
         )}
       </div>
 
-      {/* Request evaluation CTA */}
       {round?.status === "bid_submission_closed" && isBuyer && !evaluation && (
         <div className="panel border-procurement-blue/40 p-6 mb-6">
           <div className="flex items-start gap-4">

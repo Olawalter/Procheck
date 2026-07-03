@@ -26,7 +26,7 @@ const DEFAULT_REQS = [
 
 export default function CreateRoundPage() {
   const router = useRouter();
-  const { address, account, isConnected, connect } = useWallet();
+  const { address, provider, isConnected, connect } = useWallet();
   const { showToast } = useToast();
 
   const [title, setTitle] = useState("");
@@ -82,7 +82,7 @@ export default function CreateRoundPage() {
   };
 
   const handleCreate = async () => {
-    if (!isConnected || !account) {
+    if (!isConnected || !provider) {
       showToast("error", "Please connect your wallet first");
       return;
     }
@@ -99,7 +99,7 @@ export default function CreateRoundPage() {
 
     setLoading(true);
     try {
-      const hash = await writeContract(account.privateKey, "create_round", [
+      const hash = await writeContract(provider, "create_round", [
         title,
         category,
         description,
@@ -114,12 +114,10 @@ export default function CreateRoundPage() {
       ]);
       setTxHash(hash);
       showToast("info", "Transaction submitted", "Waiting for confirmation…");
-      await waitForTransaction(account.privateKey, hash);
+      await waitForTransaction(hash);
 
-      // Small delay to let contract state propagate
       await new Promise((r) => setTimeout(r, 1500));
 
-      // get_contract_stats returns a JSON string — parse it to get the round ID
       const statsRaw = await readContract<string>("get_contract_stats", []);
       const stats = typeof statsRaw === "string" ? JSON.parse(statsRaw) : statsRaw;
       const newRoundId = Number(stats.total_rounds);
