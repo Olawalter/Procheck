@@ -1,0 +1,159 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Archivo+Black&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --midnight-navy: #060B18;
+  --procurement-blue: #1D4ED8;
+  --ledger-cyan: #22D3EE;
+  --award-gold: #F5B841;
+  --compliance-green: #2CE88A;
+  --risk-red: #FF4D5E;
+  --paper-white: #F7F3EA;
+  --slate-grey: #8B93A1;
+  --panel-graphite: #111827;
+  --deep-steel: #1F2937;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: #060B18;
+}
+
+body {
+  background: #060B18;
+  color: #F7F3EA;
+  font-family: 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-display { font-family: 'Space Grotesk', sans-serif; }
+.font-mono-custom { font-family: 'IBM Plex Mono', monospace; }
+.font-accent { font-family: 'Archivo Black', sans-serif; }
+
+.grid-bg {
+  background-image: linear-gradient(rgba(29,78,216,0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(29,78,216,0.07) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.panel {
+  background: #111827;
+  border: 1px solid rgba(29, 78, 216, 0.2);
+  border-radius: 12px;
+}
+
+.panel-hover {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.panel-hover:hover {
+  border-color: rgba(34, 211, 238, 0.4);
+  box-shadow: 0 0 20px rgba(34, 211, 238, 0.08);
+}
+
+.glow-cyan {
+  box-shadow: 0 0 20px rgba(34, 211, 238, 0.3);
+}
+
+.glow-gold {
+  box-shadow: 0 0 20px rgba(245, 184, 65, 0.3);
+}
+
+.btn-primary {
+  background: #1D4ED8;
+  color: #F7F3EA;
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 10px 20px;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+  border: none;
+  cursor: pointer;
+}
+.btn-primary:hover {
+  background: #2563EB;
+  box-shadow: 0 0 16px rgba(29, 78, 216, 0.4);
+}
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: #22D3EE;
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+  border: 1px solid rgba(34, 211, 238, 0.3);
+  border-radius: 8px;
+  padding: 10px 20px;
+  transition: background 0.2s ease, border-color 0.2s ease;
+  cursor: pointer;
+}
+.btn-secondary:hover {
+  background: rgba(34, 211, 238, 0.1);
+  border-color: #22D3EE;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.input-field {
+  background: #1F2937;
+  border: 1px solid rgba(29, 78, 216, 0.3);
+  border-radius: 8px;
+  color: #F7F3EA;
+  padding: 10px 14px;
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  width: 100%;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  outline: none;
+}
+.input-field:focus {
+  border-color: #22D3EE;
+  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.1);
+}
+.input-field::placeholder {
+  color: #8B93A1;
+}
+
+.label {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8B93A1;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #060B18;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(29, 78, 216, 0.4);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(29, 78, 216, 0.7);
+}
