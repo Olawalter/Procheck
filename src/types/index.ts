@@ -17,6 +17,7 @@ export interface ProcurementRound {
   finalized: boolean;
   bid_ids: string; // JSON string
   bid_count?: number;
+  escrow_amount?: number; // locked GEN in wei
 }
 
 export type RoundStatus =

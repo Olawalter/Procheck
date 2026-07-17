@@ -40,6 +40,7 @@ export default function CreateRoundPage() {
   const [requirements, setRequirements] = useState<string[]>(DEFAULT_REQS);
   const [bidDeadlineDays, setBidDeadlineDays] = useState("7");
   const [appealWindowHours, setAppealWindowHours] = useState("48");
+  const [escrowGen, setEscrowGen] = useState("");
   const [loading, setLoading] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
 
@@ -96,6 +97,9 @@ export default function CreateRoundPage() {
     const bidDeadlineTs = Math.floor(Date.now() / 1000) + parseInt(bidDeadlineDays) * 86400;
     const appealWindowSec = parseInt(appealWindowHours) * 3600;
     const validReqs = requirements.filter(Boolean);
+    const escrowWei = escrowGen && parseInt(escrowGen) > 0
+      ? BigInt(escrowGen) * BigInt("1000000000000000000")
+      : BigInt(0);
 
     setLoading(true);
     try {
@@ -111,7 +115,7 @@ export default function CreateRoundPage() {
         JSON.stringify(validReqs),
         bidDeadlineTs,
         appealWindowSec,
-      ]);
+      ], escrowWei);
       setTxHash(hash);
       showToast("info", "Transaction submitted", "Waiting for confirmation…");
       await waitForTransaction(hash);
@@ -372,6 +376,31 @@ export default function CreateRoundPage() {
                 max={720}
               />
             </div>
+          </div>
+        </div>
+
+        {/* Escrow */}
+        <div className="panel p-6">
+          <h2 className="font-display font-semibold text-base text-paper-white mb-1">
+            GEN Escrow (Optional)
+          </h2>
+          <p className="text-xs text-slate-grey mb-4">
+            Lock GEN onchain with this round. The escrowed amount is automatically transferred to
+            the winning supplier when you finalize, or refunded to you if no valid bid is found.
+          </p>
+          <div>
+            <label className="label text-xs block mb-2">Deposit Amount (whole GEN)</label>
+            <input
+              type="number"
+              value={escrowGen}
+              onChange={(e) => setEscrowGen(e.target.value)}
+              placeholder="0"
+              className="input-field"
+              min={0}
+            />
+            <p className="text-xs text-slate-grey mt-1">
+              Leave blank to skip escrow. You can deposit more from the round detail page.
+            </p>
           </div>
         </div>
 

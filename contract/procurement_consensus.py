@@ -8,12 +8,32 @@ class ProcurementConsensusProtocol(gl.Contract):
     bids: TreeMap[str, str]
     evaluations: TreeMap[str, str]
     appeals: TreeMap[str, str]
+    escrow: TreeMap[str, u256]          # round_id -> locked GEN (wei)
     round_counter: u256
     bid_counter: u256
     appeal_counter: u256
 
     def __init__(self) -> None:
         pass
+
+    # ─── Helpers ─────────────────────────────────────────────────────────────────
+
+    def _build_bids_text(self, bid_ids: list) -> str:
+        parts = []
+        for idx, bid_id in enumerate(bid_ids, 1):
+            raw_b = self.bids.get(str(bid_id), "")
+            if raw_b:
+                b = json.loads(raw_b)
+                parts.append(
+                    f"Bid {idx} (ID: {bid_id}, Supplier: {b['supplier']}):\n"
+                    f"  Price: {b['price']} GEN\n"
+                    f"  Delivery: {b['delivery_timeline_days']} days\n"
+                    f"  Technical: {b['technical_summary']}\n"
+                    f"  Warranty: {b['warranty_terms']}\n"
+                    f"  Compliance: {b['compliance_statement']}\n"
+                    f"  Evidence URLs: {b['evidence_urls']}"
+                )
+        return "\n\n".join(parts)
 
     # ─── Round Methods ───────────────────────────────────────────────────────────
 
@@ -51,6 +71,10 @@ class ProcurementConsensusProtocol(gl.Contract):
         round_id = int(self.round_counter)
         key = str(round_id)
 
+        # Accept optional GEN escrow deposit sent with this transaction
+        escrow_amount = int(gl.message.value)
+        self.escrow[key] = u256(escrow_amount)
+
         self.rounds[key] = json.dumps({
             "round_id": round_id,
             "buyer": str(gl.message.sender_address),
@@ -69,8 +93,26 @@ class ProcurementConsensusProtocol(gl.Contract):
             "created_at": 0,
             "finalized": False,
             "bid_ids": [],
+            "escrow_amount": escrow_amount,
         })
         return self.round_counter
+
+    @gl.public.write
+    def deposit_escrow(self, round_id: u256) -> None:
+        """Buyer deposits additional GEN into escrow after round creation."""
+        round_key = str(int(round_id))
+        raw_r = self.rounds.get(round_key, "")
+        assert raw_r, "Round not found"
+        r = json.loads(raw_r)
+        assert r["buyer"] == str(gl.message.sender_address), "Only buyer can deposit escrow"
+        assert r["status"] in ("draft", "open_for_bids", "bid_submission_closed"), "Cannot deposit at this stage"
+        amount = int(gl.message.value)
+        assert amount > 0, "Must send GEN to deposit escrow"
+        current = int(self.escrow.get(round_key, u256(0)))
+        new_total = current + amount
+        self.escrow[round_key] = u256(new_total)
+        r["escrow_amount"] = new_total
+        self.rounds[round_key] = json.dumps(r)
 
     @gl.public.write
     def open_round(self, round_id: u256) -> None:
@@ -94,6 +136,13 @@ class ProcurementConsensusProtocol(gl.Contract):
         assert len(r["bid_ids"]) == 0, "Cannot cancel a round that already has bids"
         r["status"] = "cancelled"
         self.rounds[key] = json.dumps(r)
+
+        # Refund any escrowed GEN to buyer
+        locked = int(self.escrow.get(key, u256(0)))
+        if locked > 0:
+            self.escrow[key] = u256(0)
+            r["escrow_amount"] = 0
+            gl.transfer(r["buyer"], locked)
 
     @gl.public.write
     def close_bids(self, round_id: u256) -> None:
@@ -213,26 +262,12 @@ class ProcurementConsensusProtocol(gl.Contract):
         r["status"] = "under_consensus_evaluation"
         self.rounds[round_key] = json.dumps(r)
 
-        bids_text_parts = []
-        for idx, bid_id in enumerate(r["bid_ids"], 1):
-            raw_b = self.bids.get(str(bid_id), "")
-            if raw_b:
-                b = json.loads(raw_b)
-                bids_text_parts.append(
-                    f"Bid {idx} (ID: {bid_id}, Supplier: {b['supplier']}):\n"
-                    f"  Price: {b['price']} GEN\n"
-                    f"  Delivery: {b['delivery_timeline_days']} days\n"
-                    f"  Technical: {b['technical_summary']}\n"
-                    f"  Warranty: {b['warranty_terms']}\n"
-                    f"  Compliance: {b['compliance_statement']}\n"
-                    f"  Evidence URLs: {b['evidence_urls']}"
-                )
-        bids_text = "\n\n".join(bids_text_parts)
-
+        bids_text = self._build_bids_text(r["bid_ids"])
         weights = json.loads(r["criteria_weights"])
         weights_text = "\n".join(f"  {k}: {v}%" for k, v in weights.items())
         reqs = json.loads(r["mandatory_requirements"])
         reqs_text = "\n".join(f"  - {req}" for req in reqs)
+        valid_bid_ids = list(r["bid_ids"])
 
         prompt = (
             "You are evaluating a procurement round for Procurement Consensus.\n\n"
@@ -262,6 +297,12 @@ class ProcurementConsensusProtocol(gl.Contract):
             "It is mandatory that you respond only using the JSON format above, nothing else."
         )
 
+        # Capture bids_text and valid_bid_ids in closure so validator can use them
+        _bids_text = bids_text
+        _valid_bid_ids = valid_bid_ids
+        _r = r
+        _self_bids = self.bids
+
         def leader_fn():
             return gl.nondet.exec_prompt(prompt, response_format='json')
 
@@ -271,6 +312,8 @@ class ProcurementConsensusProtocol(gl.Contract):
             data = leaders_res.calldata
             if not isinstance(data, dict):
                 return False
+
+            # ── Structural checks ────────────────────────────────────────────────
             valid_verdicts = [
                 "award_recommended", "no_valid_bid", "tie_detected",
                 "insufficient_evidence", "unverifiable", "manual_review_required",
@@ -278,22 +321,75 @@ class ProcurementConsensusProtocol(gl.Contract):
             if data.get("verdict") not in valid_verdicts:
                 return False
             confidence = data.get("confidence")
-            if not isinstance(confidence, int):
+            if not isinstance(confidence, int) or confidence < 0 or confidence > 100:
                 return False
-            if confidence < 0 or confidence > 100:
+            if data.get("quality_band") not in ["poor", "weak", "acceptable", "strong", "excellent"]:
                 return False
-            valid_quality = ["poor", "weak", "acceptable", "strong", "excellent"]
-            if data.get("quality_band") not in valid_quality:
+            if data.get("price_value_band") not in ["overpriced", "questionable", "fair", "good_value", "exceptional_value"]:
                 return False
-            valid_price = ["overpriced", "questionable", "fair", "good_value", "exceptional_value"]
-            if data.get("price_value_band") not in valid_price:
+            if data.get("compliance_band") not in ["non_compliant", "weak", "partial", "strong", "complete"]:
                 return False
-            valid_compliance = ["non_compliant", "weak", "partial", "strong", "complete"]
-            if data.get("compliance_band") not in valid_compliance:
+            if data.get("risk_band") not in ["high", "medium", "low", "minimal"]:
                 return False
-            valid_risk = ["high", "medium", "low", "minimal"]
-            if data.get("risk_band") not in valid_risk:
-                return False
+
+            # ── Substantive checks (only when a winner is claimed) ───────────────
+            verdict = data.get("verdict")
+            if verdict == "award_recommended":
+                recommended_bid_id = data.get("recommended_bid_id")
+                recommended_supplier = str(data.get("recommended_supplier", ""))
+
+                # 1. Recommended bid must be one of the bids actually submitted
+                if recommended_bid_id not in _valid_bid_ids:
+                    return False
+
+                # 2. Claimed supplier must match the bid on record
+                raw_winner = _self_bids.get(str(recommended_bid_id), "")
+                if not raw_winner:
+                    return False
+                winner_bid = json.loads(raw_winner)
+                if winner_bid["supplier"] != recommended_supplier:
+                    return False
+
+                # 3. Fetch evidence URLs for the recommended bid and authenticate content
+                winner_urls = json.loads(winner_bid.get("evidence_urls", "[]"))
+                evidence_snippets = []
+                for url in winner_urls[:3]:   # cap at 3 to bound latency
+                    try:
+                        content = gl.nondet.web_scrape(url)
+                        snippet = str(content)[:600] if content else "[no content]"
+                        evidence_snippets.append(f"URL: {url}\n{snippet}")
+                    except Exception:
+                        evidence_snippets.append(f"URL: {url}\n[fetch failed]")
+                evidence_block = "\n---\n".join(evidence_snippets) if evidence_snippets else "[no evidence fetched]"
+
+                # 4. Run an independent evaluation to cross-check the leader's winner
+                val_prompt = (
+                    "You are an independent validator for a procurement consensus protocol.\n\n"
+                    f"Round: {_r['title']}\n"
+                    f"Criteria weights: {_r['criteria_weights']}\n"
+                    f"Mandatory requirements: {_r['mandatory_requirements']}\n\n"
+                    f"All submitted bids:\n{_bids_text}\n\n"
+                    f"The leader recommends Bid ID {recommended_bid_id} "
+                    f"(Supplier: {recommended_supplier}) as the best-value winner.\n\n"
+                    f"Evidence fetched from the recommended bid's URLs:\n{evidence_block}\n\n"
+                    "Based on the criteria weights, all bids, and the fetched evidence:\n"
+                    "1. Do you independently agree this bid is the best-value winner?\n"
+                    "2. Which bid ID would you recommend?\n\n"
+                    'Reply with ONLY valid JSON: '
+                    '{"agree": true or false, "winner_bid_id": <integer bid ID>}'
+                )
+                try:
+                    val_result = gl.nondet.exec_prompt(val_prompt, response_format='json')
+                    if not isinstance(val_result, dict):
+                        return False
+                    # Validator must independently agree on the same winner
+                    if not val_result.get("agree", False):
+                        return False
+                    if int(val_result.get("winner_bid_id", 0)) != int(recommended_bid_id):
+                        return False
+                except Exception:
+                    return False
+
             return True
 
         eval_result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
@@ -319,8 +415,15 @@ class ProcurementConsensusProtocol(gl.Contract):
 
         if verdict in ("no_valid_bid", "insufficient_evidence", "unverifiable", "manual_review_required"):
             r["status"] = verdict
+            # Refund escrow to buyer when no winner can be determined
+            locked = int(self.escrow.get(round_key, u256(0)))
+            if locked > 0:
+                self.escrow[round_key] = u256(0)
+                r["escrow_amount"] = 0
+                gl.transfer(r["buyer"], locked)
         else:
             r["status"] = "appeal_window_open"
+
         self.rounds[round_key] = json.dumps(r)
 
     # ─── Appeal ──────────────────────────────────────────────────────────────────
@@ -383,18 +486,20 @@ class ProcurementConsensusProtocol(gl.Contract):
         assert raw_eval, "No evaluation found"
         original_eval = json.loads(raw_eval)
 
-        bids_text_parts = []
-        for bid_id in r["bid_ids"]:
-            raw_b = self.bids.get(str(bid_id), "")
-            if raw_b:
-                b = json.loads(raw_b)
-                bids_text_parts.append(
-                    f"Bid ID {bid_id} (Supplier: {b['supplier']}):\n"
-                    f"  Price: {b['price']}\n"
-                    f"  Delivery: {b['delivery_timeline_days']} days\n"
-                    f"  Technical: {b['technical_summary']}"
-                )
-        bids_text = "\n\n".join(bids_text_parts)
+        bids_text = self._build_bids_text(r["bid_ids"])
+        _r = r
+
+        # Fetch any new evidence URLs submitted with the appeal
+        appeal_urls = json.loads(appeal.get("evidence_urls", "[]"))
+        appeal_evidence = []
+        for url in appeal_urls[:3]:
+            try:
+                content = gl.nondet.web_scrape(url)
+                snippet = str(content)[:600] if content else "[no content]"
+                appeal_evidence.append(f"URL: {url}\n{snippet}")
+            except Exception:
+                appeal_evidence.append(f"URL: {url}\n[fetch failed]")
+        appeal_evidence_block = "\n---\n".join(appeal_evidence) if appeal_evidence else "[no appeal evidence fetched]"
 
         prompt = (
             "You are reviewing an appeal for a procurement evaluation on Procurement Consensus.\n\n"
@@ -406,10 +511,11 @@ class ProcurementConsensusProtocol(gl.Contract):
             f"Confidence: {original_eval['confidence']}%\n"
             f"Reason: {original_eval['short_reason']}\n\n"
             f"APPEAL:\nFiled by: {appeal['filed_by']}\n"
-            f"Basis: {appeal['basis']}\nStatement: {appeal['statement']}\n"
-            f"Additional evidence: {appeal['evidence_urls']}\n\n"
+            f"Basis: {appeal['basis']}\nStatement: {appeal['statement']}\n\n"
+            f"Evidence fetched from appeal URLs:\n{appeal_evidence_block}\n\n"
             f"ALL SUBMITTED BIDS:\n{bids_text}\n\n"
-            "Does the appeal introduce meaningful evidence that was overlooked? Should the recommendation change?\n\n"
+            "Does the appeal introduce meaningful evidence that was overlooked or misread? "
+            "Should the recommendation change?\n\n"
             'Return ONLY a valid JSON object:\n'
             '{\n'
             '  "appeal_verdict": "appeal_granted or appeal_rejected or manual_review_required",\n'
@@ -431,11 +537,48 @@ class ProcurementConsensusProtocol(gl.Contract):
             data = leaders_res.calldata
             if not isinstance(data, dict):
                 return False
+
+            # Structural checks
             valid_verdicts = ("appeal_granted", "appeal_rejected", "manual_review_required")
             if data.get("appeal_verdict") not in valid_verdicts:
                 return False
             if not isinstance(data.get("final_recommendation_changed"), bool):
                 return False
+            confidence = data.get("confidence")
+            if not isinstance(confidence, int) or confidence < 0 or confidence > 100:
+                return False
+
+            # Substantive check: if the appeal is granted and recommendation changed,
+            # the new winner must be a real bid in this round
+            if data.get("final_recommendation_changed", False):
+                new_id = data.get("new_recommended_bid_id")
+                if new_id not in _r["bid_ids"]:
+                    return False
+
+            # Fetch and cross-check appeal evidence independently
+            val_prompt = (
+                "You are an independent appeal validator for a procurement protocol.\n\n"
+                f"Round: {_r['title']}\n"
+                f"Original verdict: {original_eval['verdict']} — Bid {original_eval['recommended_bid_id']}\n"
+                f"Appeal basis: {appeal['basis']}\n"
+                f"Appeal statement: {appeal['statement']}\n\n"
+                f"Evidence fetched:\n{appeal_evidence_block}\n\n"
+                f"All bids:\n{bids_text}\n\n"
+                "Does this appeal introduce substantive evidence that changes the outcome?\n"
+                'Reply with ONLY valid JSON: {"upheld": true or false}'
+            )
+            try:
+                val_result = gl.nondet.exec_prompt(val_prompt, response_format='json')
+                if not isinstance(val_result, dict):
+                    return False
+                leader_upheld = data.get("appeal_verdict") == "appeal_granted"
+                validator_upheld = bool(val_result.get("upheld", False))
+                # Both must agree on whether the appeal has merit
+                if leader_upheld != validator_upheld:
+                    return False
+            except Exception:
+                return False
+
             return True
 
         appeal_result = gl.vm.run_nondet_unsafe(appeal_leader_fn, appeal_validator_fn)
@@ -448,6 +591,11 @@ class ProcurementConsensusProtocol(gl.Contract):
             original_eval["recommended_bid_id"] = int(
                 appeal_result.get("new_recommended_bid_id", original_eval["recommended_bid_id"])
             )
+            # Update recommended_supplier to match the new winning bid
+            new_bid_raw = self.bids.get(str(original_eval["recommended_bid_id"]), "")
+            if new_bid_raw:
+                new_bid = json.loads(new_bid_raw)
+                original_eval["recommended_supplier"] = new_bid["supplier"]
             original_eval["verdict"] = "award_recommended"
             self.evaluations[round_key] = json.dumps(original_eval)
 
@@ -462,11 +610,31 @@ class ProcurementConsensusProtocol(gl.Contract):
         r = json.loads(raw)
         assert r["buyer"] == str(gl.message.sender_address), "Only buyer can finalize"
         assert r["status"] in ("recommendation_issued", "appeal_window_open"), "No recommendation to finalize"
+
+        raw_eval = self.evaluations.get(key, "")
+        assert raw_eval, "No evaluation found"
+        eval_data = json.loads(raw_eval)
+
         r["status"] = "finalized"
         r["finalized"] = True
         self.rounds[key] = json.dumps(r)
 
-    # ─── Read Methods — all return str (JSON-serialized) ─────────────────────────
+        # Release escrow: pay winner or refund buyer
+        locked = int(self.escrow.get(key, u256(0)))
+        if locked > 0:
+            self.escrow[key] = u256(0)
+            r["escrow_amount"] = 0
+            if eval_data.get("verdict") == "award_recommended":
+                winner_address = str(eval_data.get("recommended_supplier", ""))
+                if winner_address:
+                    gl.transfer(winner_address, locked)
+                else:
+                    gl.transfer(r["buyer"], locked)
+            else:
+                # No valid winner — refund buyer
+                gl.transfer(r["buyer"], locked)
+
+    # ─── Read Methods ─────────────────────────────────────────────────────────────
 
     @gl.public.view
     def get_round(self, round_id: u256) -> str:
@@ -512,6 +680,12 @@ class ProcurementConsensusProtocol(gl.Contract):
         return raw
 
     @gl.public.view
+    def get_escrow(self, round_id: u256) -> str:
+        key = str(int(round_id))
+        locked = int(self.escrow.get(key, u256(0)))
+        return json.dumps({"round_id": int(round_id), "locked_amount": locked})
+
+    @gl.public.view
     def get_all_rounds(self) -> str:
         result = []
         counter = int(self.round_counter)
@@ -533,6 +707,7 @@ class ProcurementConsensusProtocol(gl.Contract):
                     "created_at": r["created_at"],
                     "finalized": r["finalized"],
                     "bid_count": len(r["bid_ids"]),
+                    "escrow_amount": r.get("escrow_amount", 0),
                 })
         return json.dumps(result)
 
@@ -554,6 +729,7 @@ class ProcurementConsensusProtocol(gl.Contract):
                         "created_at": r["created_at"],
                         "finalized": r["finalized"],
                         "bid_count": len(r["bid_ids"]),
+                        "escrow_amount": r.get("escrow_amount", 0),
                     })
         return json.dumps(result)
 

@@ -257,6 +257,21 @@ export default function RoundDetailPage() {
             <AwardTrailTimeline currentStatus={round.status} />
           </div>
 
+          {/* Escrow status */}
+          {(round.escrow_amount ?? 0) > 0 && (
+            <div className="panel p-4 border-award-gold/30">
+              <h3 className="label text-xs mb-2">GEN Escrow</h3>
+              <p className="font-display font-bold text-award-gold text-lg">
+                {(Number(round.escrow_amount) / 1e18).toLocaleString(undefined, { maximumFractionDigits: 4 })} GEN
+              </p>
+              <p className="text-xs text-slate-grey mt-1">
+                {round.status === "finalized"
+                  ? "Released to winning supplier"
+                  : "Locked onchain — released to winner on finalization"}
+              </p>
+            </div>
+          )}
+
           {lastTx && (
             <div className="panel p-4">
               <h3 className="label text-xs mb-3">On-Chain</h3>

@@ -47,6 +47,43 @@ GenLayer validators handle it through `gl.nondet.exec_prompt`, where each valida
 
 ---
 
+## Substantive Validator Verification
+
+A common failure mode in on-chain AI evaluation is that validators only check whether the output looks correct (is the JSON well-formed? are the band values valid?) without checking whether the conclusion itself is sound.
+
+Procurement Consensus validators go further. When a leader recommends a winner, each independent validator:
+
+1. **Verifies the winning bid exists** — checks that the `recommended_bid_id` is actually one of the bids submitted to this round, and that the `recommended_supplier` address matches the on-chain bid record (not just whatever the leader claimed)
+2. **Fetches and authenticates evidence** — calls `gl.nondet.web_scrape` on the recommended bid's evidence URLs (up to 3 URLs, capped for latency) and reads the actual content
+3. **Runs an independent evaluation** — issues its own `gl.nondet.exec_prompt` call asking: *given the criteria weights, all bids, and the fetched evidence, do you independently agree this bid is the best-value winner?*
+4. **Must agree on the same winner** — the validator returns `{"agree": true, "winner_bid_id": <n>}`. If the validator's independently-determined winner differs from the leader's, the validator returns `false` and consensus fails
+
+This means a leader cannot recommend a phantom bid, a mismatched supplier, or a winner not supported by its evidence. Validators are not rubber-stamps — they are independent re-evaluators.
+
+The same principle applies to appeal review: the appeal validator independently fetches the appeal's evidence URLs and determines whether the appeal has merit, then checks that its independent conclusion matches the leader's.
+
+---
+
+## GEN Escrow Integration
+
+Buyers can lock GEN onchain with each procurement round. The escrow is held by the contract and released automatically:
+
+| Outcome | What happens to the escrow |
+|---|---|
+| `award_recommended` → buyer finalizes | Transferred to the winning supplier's address |
+| `no_valid_bid` / `insufficient_evidence` / `unverifiable` | Refunded to buyer automatically |
+| Round cancelled (before any bids) | Refunded to buyer immediately |
+| Buyer finalizes with no valid winner | Refunded to buyer |
+
+**How to deposit escrow:**
+
+1. On the Create Round page, enter a whole GEN amount in the **GEN Escrow** field — it is sent as native value with the `create_round` transaction
+2. Alternatively, call `deposit_escrow(round_id)` separately with GEN value to add more after creation
+
+The escrow amount is visible on the round detail page. No manual release is required — finalization triggers the transfer automatically.
+
+---
+
 ## The Equivalence Principle in Procurement
 
 Procurement judgement is inherently qualitative. Two validators may write different reasoning but reach the same procurement conclusion. Procurement Consensus accounts for this by requiring validators to express their verdict in structured bands rather than free text:
@@ -264,7 +301,8 @@ GenLayer validators compare all three bids against the criteria. Takes 30–90 s
 | `revise_bid(bid_id, ...)` | Revise your bid before close |
 | `request_evaluation(round_id)` | Trigger validator consensus evaluation |
 | `finalize_recommendation(round_id)` | Buyer accepts and finalizes the result |
-| `cancel_round(round_id)` | Cancel round (buyer only, before bids) |
+| `cancel_round(round_id)` | Cancel round (buyer only, before bids) — refunds escrow |
+| `deposit_escrow(round_id)` | Deposit additional GEN escrow after round creation (payable) |
 | `file_appeal(round_id, basis, statement, evidence_urls)` | File a structured appeal |
 | `request_appeal_review(round_id)` | Trigger validator appeal review |
 
@@ -279,6 +317,7 @@ GenLayer validators compare all three bids against the criteria. Takes 30–90 s
 | `get_bids_by_supplier(address)` | Bids submitted by an address |
 | `get_evaluation_result(round_id)` | Evaluation result or empty dict |
 | `get_appeal(round_id)` | Appeal object or empty dict |
+| `get_escrow(round_id)` | `{ round_id, locked_amount }` in wei |
 | `get_contract_stats()` | `{ total_rounds, total_bids, total_appeals }` |
 
 ---
@@ -304,10 +343,9 @@ Edge-case verdicts: `no_valid_bid`, `tie_detected`, `insufficient_evidence`, `ma
 ## Known Limitations
 
 - StudioNet state resets periodically — do not use for production data
-- Evaluation takes 30–90 seconds (LLM validators)
-- Evidence URLs are passed to the contract as metadata — validators evaluate the summaries, not the actual URL content
+- Evaluation takes 30–90 seconds (LLM validators), longer when evidence URLs are fetched
 - `get_all_rounds()` iterates linearly — may be slow at large round counts
-- No GEN escrow or payment release in this version; operates in award recommendation mode
+- Escrow amounts must be whole GEN units from the UI; sub-unit deposits require a direct contract call
 
 ---
 
