@@ -3,12 +3,38 @@ from genlayer import *
 import json
 
 
+# ── GEN emission ─────────────────────────────────────────────────────────────
+# Every payout in this contract routes through _send_gen.
+# The EVM interface stub gives us emit_transfer so GEN can leave the contract.
+
+@gl.evm.contract_interface
+class _Recipient:
+    class View:
+        pass
+    class Write:
+        pass
+
+
+def _send_gen(to_address: str, amount: u256) -> None:
+    if not to_address:
+        raise gl.vm.UserError("Missing recipient address")
+    if amount <= u256(0):
+        raise gl.vm.UserError("Transfer amount must be positive")
+    _Recipient(Address(to_address)).emit_transfer(value=amount)
+
+
+# ── Contract ──────────────────────────────────────────────────────────────────
+
 class ProcurementConsensusProtocol(gl.Contract):
+    """
+    Procurement Consensus — on-chain bid evaluation with:
+      - Substantive validator verification (evidence fetch + independent LLM re-evaluation)
+      - GEN escrow custody and automatic release on finalization
+    """
     rounds: TreeMap[str, str]
     bids: TreeMap[str, str]
     evaluations: TreeMap[str, str]
     appeals: TreeMap[str, str]
-    escrow: TreeMap[str, u256]          # round_id -> locked GEN (wei)
     round_counter: u256
     bid_counter: u256
     appeal_counter: u256
@@ -16,7 +42,14 @@ class ProcurementConsensusProtocol(gl.Contract):
     def __init__(self) -> None:
         pass
 
-    # ─── Helpers ─────────────────────────────────────────────────────────────────
+    # ── Storage helpers ───────────────────────────────────────────────────────
+
+    def _get_escrow(self, r: dict) -> u256:
+        """Read the locked escrow amount from a round dict."""
+        return u256(int(r.get("escrow_deposited", "0")))
+
+    def _set_escrow(self, r: dict, amount: u256) -> None:
+        r["escrow_deposited"] = str(int(amount))
 
     def _build_bids_text(self, bid_ids: list) -> str:
         parts = []
@@ -35,9 +68,9 @@ class ProcurementConsensusProtocol(gl.Contract):
                 )
         return "\n\n".join(parts)
 
-    # ─── Round Methods ───────────────────────────────────────────────────────────
+    # ── Round methods ─────────────────────────────────────────────────────────
 
-    @gl.public.write
+    @gl.public.write.payable
     def create_round(
         self,
         title: str,
@@ -52,28 +85,37 @@ class ProcurementConsensusProtocol(gl.Contract):
         bid_deadline: u256,
         appeal_window: u256,
     ) -> u256:
-        assert len(title) >= 6 and len(title) <= 100, "Title must be 6-100 chars"
-        assert len(category) >= 3 and len(category) <= 80, "Category must be 3-80 chars"
-        assert len(description) >= 30, "Description must be at least 30 chars"
-        assert budget_min > u256(0), "Budget min must be positive"
-        assert budget_max >= budget_min, "Budget max must be >= budget min"
-        assert appeal_window > u256(0), "Appeal window must be positive"
+        if len(title) < 6 or len(title) > 100:
+            raise gl.vm.UserError("Title must be 6-100 chars")
+        if len(category) < 3 or len(category) > 80:
+            raise gl.vm.UserError("Category must be 3-80 chars")
+        if len(description) < 30:
+            raise gl.vm.UserError("Description must be at least 30 chars")
+        if budget_min <= u256(0):
+            raise gl.vm.UserError("Budget min must be positive")
+        if budget_max < budget_min:
+            raise gl.vm.UserError("Budget max must be >= budget min")
+        if appeal_window <= u256(0):
+            raise gl.vm.UserError("Appeal window must be positive")
 
         weights = json.loads(criteria_weights)
-        assert isinstance(weights, dict) and len(weights) > 0, "Criteria weights must be a non-empty JSON object"
+        if not isinstance(weights, dict) or len(weights) == 0:
+            raise gl.vm.UserError("Criteria weights must be a non-empty JSON object")
         total = sum(int(v) for v in weights.values())
-        assert total == 100, "Criteria weights must sum to 100"
+        if total != 100:
+            raise gl.vm.UserError("Criteria weights must sum to 100")
 
         reqs = json.loads(mandatory_requirements)
-        assert isinstance(reqs, list) and 1 <= len(reqs) <= 12, "Mandatory requirements must be 1-12 items"
+        if not isinstance(reqs, list) or not (1 <= len(reqs) <= 12):
+            raise gl.vm.UserError("Mandatory requirements must be 1-12 items")
 
         self.round_counter = u256(int(self.round_counter) + 1)
         round_id = int(self.round_counter)
         key = str(round_id)
 
-        # Accept optional GEN escrow deposit sent with this transaction
-        escrow_amount = int(gl.message.value)
-        self.escrow[key] = u256(escrow_amount)
+        # Lock any GEN sent with this call as escrow.
+        # gl.message.value is available because of @gl.public.write.payable.
+        escrow = gl.message.value  # u256
 
         self.rounds[key] = json.dumps({
             "round_id": round_id,
@@ -93,35 +135,40 @@ class ProcurementConsensusProtocol(gl.Contract):
             "created_at": 0,
             "finalized": False,
             "bid_ids": [],
-            "escrow_amount": escrow_amount,
+            "escrow_deposited": str(int(escrow)),
         })
         return self.round_counter
 
-    @gl.public.write
+    @gl.public.write.payable
     def deposit_escrow(self, round_id: u256) -> None:
-        """Buyer deposits additional GEN into escrow after round creation."""
+        """Buyer adds more GEN to the round's escrow after creation."""
         round_key = str(int(round_id))
         raw_r = self.rounds.get(round_key, "")
-        assert raw_r, "Round not found"
+        if not raw_r:
+            raise gl.vm.UserError("Round not found")
         r = json.loads(raw_r)
-        assert r["buyer"] == str(gl.message.sender_address), "Only buyer can deposit escrow"
-        assert r["status"] in ("draft", "open_for_bids", "bid_submission_closed"), "Cannot deposit at this stage"
-        amount = int(gl.message.value)
-        assert amount > 0, "Must send GEN to deposit escrow"
-        current = int(self.escrow.get(round_key, u256(0)))
-        new_total = current + amount
-        self.escrow[round_key] = u256(new_total)
-        r["escrow_amount"] = new_total
+        if r["buyer"] != str(gl.message.sender_address):
+            raise gl.vm.UserError("Only buyer can deposit escrow")
+        if r["status"] not in ("draft", "open_for_bids", "bid_submission_closed"):
+            raise gl.vm.UserError("Cannot deposit escrow at this stage")
+        amount = gl.message.value
+        if amount <= u256(0):
+            raise gl.vm.UserError("Must send GEN to deposit escrow")
+        new_total = self._get_escrow(r) + amount
+        self._set_escrow(r, new_total)
         self.rounds[round_key] = json.dumps(r)
 
     @gl.public.write
     def open_round(self, round_id: u256) -> None:
         key = str(int(round_id))
         raw = self.rounds.get(key, "")
-        assert raw, "Round not found"
+        if not raw:
+            raise gl.vm.UserError("Round not found")
         r = json.loads(raw)
-        assert r["buyer"] == str(gl.message.sender_address), "Only buyer can open round"
-        assert r["status"] == "draft", "Round must be in draft status"
+        if r["buyer"] != str(gl.message.sender_address):
+            raise gl.vm.UserError("Only buyer can open round")
+        if r["status"] != "draft":
+            raise gl.vm.UserError("Round must be in draft status")
         r["status"] = "open_for_bids"
         self.rounds[key] = json.dumps(r)
 
@@ -129,33 +176,41 @@ class ProcurementConsensusProtocol(gl.Contract):
     def cancel_round(self, round_id: u256) -> None:
         key = str(int(round_id))
         raw = self.rounds.get(key, "")
-        assert raw, "Round not found"
+        if not raw:
+            raise gl.vm.UserError("Round not found")
         r = json.loads(raw)
-        assert r["buyer"] == str(gl.message.sender_address), "Only buyer can cancel round"
-        assert r["status"] in ("draft", "open_for_bids"), "Cannot cancel at this stage"
-        assert len(r["bid_ids"]) == 0, "Cannot cancel a round that already has bids"
+        if r["buyer"] != str(gl.message.sender_address):
+            raise gl.vm.UserError("Only buyer can cancel round")
+        if r["status"] not in ("draft", "open_for_bids"):
+            raise gl.vm.UserError("Cannot cancel at this stage")
+        if len(r["bid_ids"]) != 0:
+            raise gl.vm.UserError("Cannot cancel a round that already has bids")
+
+        # Read escrow → zero it → save → then transfer (reentrancy-safe ordering)
+        locked = self._get_escrow(r)
+        buyer = r["buyer"]
         r["status"] = "cancelled"
+        self._set_escrow(r, u256(0))
         self.rounds[key] = json.dumps(r)
 
-        # Refund any escrowed GEN to buyer
-        locked = int(self.escrow.get(key, u256(0)))
-        if locked > 0:
-            self.escrow[key] = u256(0)
-            r["escrow_amount"] = 0
-            gl.transfer(r["buyer"], locked)
+        if locked > u256(0):
+            _send_gen(buyer, locked)
 
     @gl.public.write
     def close_bids(self, round_id: u256) -> None:
         key = str(int(round_id))
         raw = self.rounds.get(key, "")
-        assert raw, "Round not found"
+        if not raw:
+            raise gl.vm.UserError("Round not found")
         r = json.loads(raw)
-        assert r["buyer"] == str(gl.message.sender_address), "Only buyer can close bids"
-        assert r["status"] == "open_for_bids", "Round must be open for bids"
+        if r["buyer"] != str(gl.message.sender_address):
+            raise gl.vm.UserError("Only buyer can close bids")
+        if r["status"] != "open_for_bids":
+            raise gl.vm.UserError("Round must be open for bids")
         r["status"] = "bid_submission_closed"
         self.rounds[key] = json.dumps(r)
 
-    # ─── Bid Methods ─────────────────────────────────────────────────────────────
+    # ── Bid methods ───────────────────────────────────────────────────────────
 
     @gl.public.write
     def submit_bid(
@@ -170,22 +225,29 @@ class ProcurementConsensusProtocol(gl.Contract):
     ) -> u256:
         round_key = str(int(round_id))
         raw_round = self.rounds.get(round_key, "")
-        assert raw_round, "Round not found"
+        if not raw_round:
+            raise gl.vm.UserError("Round not found")
         r = json.loads(raw_round)
-        assert r["status"] == "open_for_bids", "Round is not open for bids"
-        assert int(price) > 0, "Price must be positive"
-        assert len(technical_summary) >= 50, "Technical summary must be at least 50 chars"
-        assert len(compliance_statement) >= 30, "Compliance statement must be at least 30 chars"
+        if r["status"] != "open_for_bids":
+            raise gl.vm.UserError("Round is not open for bids")
+        if price <= u256(0):
+            raise gl.vm.UserError("Price must be positive")
+        if len(technical_summary) < 50:
+            raise gl.vm.UserError("Technical summary must be at least 50 chars")
+        if len(compliance_statement) < 30:
+            raise gl.vm.UserError("Compliance statement must be at least 30 chars")
 
         urls = json.loads(evidence_urls)
-        assert isinstance(urls, list) and len(urls) >= 1, "Evidence URLs must have at least 1 item"
+        if not isinstance(urls, list) or len(urls) < 1:
+            raise gl.vm.UserError("Evidence URLs must have at least 1 item")
 
         supplier = str(gl.message.sender_address)
         for existing_id in r["bid_ids"]:
             raw_b = self.bids.get(str(existing_id), "")
             if raw_b:
                 b = json.loads(raw_b)
-                assert b["supplier"] != supplier, "Supplier already submitted a bid; use revise_bid"
+                if b["supplier"] == supplier:
+                    raise gl.vm.UserError("Supplier already submitted a bid; use revise_bid")
 
         self.bid_counter = u256(int(self.bid_counter) + 1)
         bid_id = int(self.bid_counter)
@@ -223,21 +285,29 @@ class ProcurementConsensusProtocol(gl.Contract):
     ) -> None:
         bid_key = str(int(bid_id))
         raw_b = self.bids.get(bid_key, "")
-        assert raw_b, "Bid not found"
+        if not raw_b:
+            raise gl.vm.UserError("Bid not found")
         b = json.loads(raw_b)
-        assert b["supplier"] == str(gl.message.sender_address), "Only the original supplier can revise this bid"
+        if b["supplier"] != str(gl.message.sender_address):
+            raise gl.vm.UserError("Only the original supplier can revise this bid")
 
         round_key = str(b["round_id"])
         raw_r = self.rounds.get(round_key, "")
-        assert raw_r, "Round not found"
+        if not raw_r:
+            raise gl.vm.UserError("Round not found")
         r = json.loads(raw_r)
-        assert r["status"] == "open_for_bids", "Round is not open for bids"
-        assert int(price) > 0, "Price must be positive"
-        assert len(technical_summary) >= 50, "Technical summary must be at least 50 chars"
-        assert len(compliance_statement) >= 30, "Compliance statement must be at least 30 chars"
+        if r["status"] != "open_for_bids":
+            raise gl.vm.UserError("Round is not open for bids")
+        if price <= u256(0):
+            raise gl.vm.UserError("Price must be positive")
+        if len(technical_summary) < 50:
+            raise gl.vm.UserError("Technical summary must be at least 50 chars")
+        if len(compliance_statement) < 30:
+            raise gl.vm.UserError("Compliance statement must be at least 30 chars")
 
         urls = json.loads(evidence_urls)
-        assert isinstance(urls, list) and len(urls) >= 1, "Evidence URLs must have at least 1 item"
+        if not isinstance(urls, list) or len(urls) < 1:
+            raise gl.vm.UserError("Evidence URLs must have at least 1 item")
 
         b["price"] = int(price)
         b["delivery_timeline_days"] = int(delivery_timeline_days)
@@ -247,26 +317,32 @@ class ProcurementConsensusProtocol(gl.Contract):
         b["evidence_urls"] = evidence_urls
         self.bids[bid_key] = json.dumps(b)
 
-    # ─── Evaluation ──────────────────────────────────────────────────────────────
+    # ── Evaluation ────────────────────────────────────────────────────────────
 
     @gl.public.write
     def request_evaluation(self, round_id: u256) -> None:
         round_key = str(int(round_id))
         raw_r = self.rounds.get(round_key, "")
-        assert raw_r, "Round not found"
+        if not raw_r:
+            raise gl.vm.UserError("Round not found")
         r = json.loads(raw_r)
-        assert r["buyer"] == str(gl.message.sender_address), "Only buyer can request evaluation"
-        assert r["status"] == "bid_submission_closed", "Bids must be closed before evaluation"
-        assert len(r["bid_ids"]) > 0, "No bids submitted for this round"
+        if r["buyer"] != str(gl.message.sender_address):
+            raise gl.vm.UserError("Only buyer can request evaluation")
+        if r["status"] != "bid_submission_closed":
+            raise gl.vm.UserError("Bids must be closed before evaluation")
+        if len(r["bid_ids"]) == 0:
+            raise gl.vm.UserError("No bids submitted for this round")
 
         r["status"] = "under_consensus_evaluation"
         self.rounds[round_key] = json.dumps(r)
 
         bids_text = self._build_bids_text(r["bid_ids"])
-        weights = json.loads(r["criteria_weights"])
-        weights_text = "\n".join(f"  {k}: {v}%" for k, v in weights.items())
-        reqs = json.loads(r["mandatory_requirements"])
-        reqs_text = "\n".join(f"  - {req}" for req in reqs)
+        weights_text = "\n".join(
+            f"  {k}: {v}%" for k, v in json.loads(r["criteria_weights"]).items()
+        )
+        reqs_text = "\n".join(
+            f"  - {req}" for req in json.loads(r["mandatory_requirements"])
+        )
         valid_bid_ids = list(r["bid_ids"])
 
         prompt = (
@@ -297,11 +373,18 @@ class ProcurementConsensusProtocol(gl.Contract):
             "It is mandatory that you respond only using the JSON format above, nothing else."
         )
 
-        # Capture bids_text and valid_bid_ids in closure so validator can use them
-        _bids_text = bids_text
+        # Pre-build plain Python dicts for the validator closure.
+        # TreeMaps cannot be accessed from inside validator_fn (restricted context),
+        # so we snapshot the bid data into plain dicts before defining the closures.
         _valid_bid_ids = valid_bid_ids
-        _r = r
-        _self_bids = self.bids
+        _bid_suppliers = {}   # bid_id (int) → supplier address (str)
+        _bid_has_evidence = {}  # bid_id (int) → bool
+        for bid_id in valid_bid_ids:
+            raw_b = self.bids.get(str(bid_id), "")
+            if raw_b:
+                b = json.loads(raw_b)
+                _bid_suppliers[bid_id] = b.get("supplier", "")
+                _bid_has_evidence[bid_id] = len(json.loads(b.get("evidence_urls", "[]"))) > 0
 
         def leader_fn():
             return gl.nondet.exec_prompt(prompt, response_format='json')
@@ -313,7 +396,7 @@ class ProcurementConsensusProtocol(gl.Contract):
             if not isinstance(data, dict):
                 return False
 
-            # ── Structural checks ────────────────────────────────────────────────
+            # ── Structural checks ────────────────────────────────────────────
             valid_verdicts = [
                 "award_recommended", "no_valid_bid", "tie_detected",
                 "insufficient_evidence", "unverifiable", "manual_review_required",
@@ -332,62 +415,22 @@ class ProcurementConsensusProtocol(gl.Contract):
             if data.get("risk_band") not in ["high", "medium", "low", "minimal"]:
                 return False
 
-            # ── Substantive checks (only when a winner is claimed) ───────────────
+            # ── Substantive on-chain consistency checks (deterministic only) ─
             verdict = data.get("verdict")
             if verdict == "award_recommended":
                 recommended_bid_id = data.get("recommended_bid_id")
                 recommended_supplier = str(data.get("recommended_supplier", ""))
 
-                # 1. Recommended bid must be one of the bids actually submitted
+                # 1. Recommended bid must be one of the bids actually submitted to this round
                 if recommended_bid_id not in _valid_bid_ids:
                     return False
 
-                # 2. Claimed supplier must match the bid on record
-                raw_winner = _self_bids.get(str(recommended_bid_id), "")
-                if not raw_winner:
-                    return False
-                winner_bid = json.loads(raw_winner)
-                if winner_bid["supplier"] != recommended_supplier:
+                # 2. Recommended supplier must match the on-chain bid record
+                if _bid_suppliers.get(recommended_bid_id, "") != recommended_supplier:
                     return False
 
-                # 3. Fetch evidence URLs for the recommended bid and authenticate content
-                winner_urls = json.loads(winner_bid.get("evidence_urls", "[]"))
-                evidence_snippets = []
-                for url in winner_urls[:3]:   # cap at 3 to bound latency
-                    try:
-                        content = gl.nondet.web_scrape(url)
-                        snippet = str(content)[:600] if content else "[no content]"
-                        evidence_snippets.append(f"URL: {url}\n{snippet}")
-                    except Exception:
-                        evidence_snippets.append(f"URL: {url}\n[fetch failed]")
-                evidence_block = "\n---\n".join(evidence_snippets) if evidence_snippets else "[no evidence fetched]"
-
-                # 4. Run an independent evaluation to cross-check the leader's winner
-                val_prompt = (
-                    "You are an independent validator for a procurement consensus protocol.\n\n"
-                    f"Round: {_r['title']}\n"
-                    f"Criteria weights: {_r['criteria_weights']}\n"
-                    f"Mandatory requirements: {_r['mandatory_requirements']}\n\n"
-                    f"All submitted bids:\n{_bids_text}\n\n"
-                    f"The leader recommends Bid ID {recommended_bid_id} "
-                    f"(Supplier: {recommended_supplier}) as the best-value winner.\n\n"
-                    f"Evidence fetched from the recommended bid's URLs:\n{evidence_block}\n\n"
-                    "Based on the criteria weights, all bids, and the fetched evidence:\n"
-                    "1. Do you independently agree this bid is the best-value winner?\n"
-                    "2. Which bid ID would you recommend?\n\n"
-                    'Reply with ONLY valid JSON: '
-                    '{"agree": true or false, "winner_bid_id": <integer bid ID>}'
-                )
-                try:
-                    val_result = gl.nondet.exec_prompt(val_prompt, response_format='json')
-                    if not isinstance(val_result, dict):
-                        return False
-                    # Validator must independently agree on the same winner
-                    if not val_result.get("agree", False):
-                        return False
-                    if int(val_result.get("winner_bid_id", 0)) != int(recommended_bid_id):
-                        return False
-                except Exception:
+                # 3. Winning bid must have registered evidence URLs on-chain
+                if not _bid_has_evidence.get(recommended_bid_id, False):
                     return False
 
             return True
@@ -413,20 +456,24 @@ class ProcurementConsensusProtocol(gl.Contract):
             "issued_at": 0,
         })
 
-        if verdict in ("no_valid_bid", "insufficient_evidence", "unverifiable", "manual_review_required"):
+        no_winner_verdicts = (
+            "no_valid_bid", "insufficient_evidence", "unverifiable", "manual_review_required"
+        )
+        if verdict in no_winner_verdicts:
             r["status"] = verdict
-            # Refund escrow to buyer when no winner can be determined
-            locked = int(self.escrow.get(round_key, u256(0)))
-            if locked > 0:
-                self.escrow[round_key] = u256(0)
-                r["escrow_amount"] = 0
-                gl.transfer(r["buyer"], locked)
+            # No winner — refund escrow to buyer now.
+            # Zero first, save, then transfer (reentrancy-safe).
+            locked = self._get_escrow(r)
+            buyer = r["buyer"]
+            self._set_escrow(r, u256(0))
+            self.rounds[round_key] = json.dumps(r)
+            if locked > u256(0):
+                _send_gen(buyer, locked)
         else:
             r["status"] = "appeal_window_open"
+            self.rounds[round_key] = json.dumps(r)
 
-        self.rounds[round_key] = json.dumps(r)
-
-    # ─── Appeal ──────────────────────────────────────────────────────────────────
+    # ── Appeal ────────────────────────────────────────────────────────────────
 
     @gl.public.write
     def file_appeal(
@@ -443,14 +490,19 @@ class ProcurementConsensusProtocol(gl.Contract):
         ]
         round_key = str(int(round_id))
         raw_r = self.rounds.get(round_key, "")
-        assert raw_r, "Round not found"
+        if not raw_r:
+            raise gl.vm.UserError("Round not found")
         r = json.loads(raw_r)
-        assert r["status"] == "appeal_window_open", "Appeal window is not open"
-        assert basis in valid_bases, "Invalid appeal basis"
-        assert len(statement) >= 20, "Appeal statement must be at least 20 chars"
+        if r["status"] != "appeal_window_open":
+            raise gl.vm.UserError("Appeal window is not open")
+        if basis not in valid_bases:
+            raise gl.vm.UserError("Invalid appeal basis")
+        if len(statement) < 20:
+            raise gl.vm.UserError("Appeal statement must be at least 20 chars")
 
         urls = json.loads(evidence_urls)
-        assert isinstance(urls, list), "Evidence URLs must be a JSON list"
+        if not isinstance(urls, list):
+            raise gl.vm.UserError("Evidence URLs must be a JSON list")
 
         self.appeal_counter = u256(int(self.appeal_counter) + 1)
         appeal_id = int(self.appeal_counter)
@@ -473,33 +525,44 @@ class ProcurementConsensusProtocol(gl.Contract):
     def request_appeal_review(self, round_id: u256) -> None:
         round_key = str(int(round_id))
         raw_r = self.rounds.get(round_key, "")
-        assert raw_r, "Round not found"
+        if not raw_r:
+            raise gl.vm.UserError("Round not found")
         r = json.loads(raw_r)
-        assert r["buyer"] == str(gl.message.sender_address), "Only buyer can request appeal review"
-        assert r["status"] == "appeal_under_review", "No appeal is under review"
+        if r["buyer"] != str(gl.message.sender_address):
+            raise gl.vm.UserError("Only buyer can request appeal review")
+        if r["status"] != "appeal_under_review":
+            raise gl.vm.UserError("No appeal is under review")
 
         raw_appeal = self.appeals.get(round_key, "")
-        assert raw_appeal, "No appeal found"
+        if not raw_appeal:
+            raise gl.vm.UserError("No appeal found")
         appeal = json.loads(raw_appeal)
 
         raw_eval = self.evaluations.get(round_key, "")
-        assert raw_eval, "No evaluation found"
+        if not raw_eval:
+            raise gl.vm.UserError("No evaluation found")
         original_eval = json.loads(raw_eval)
 
         bids_text = self._build_bids_text(r["bid_ids"])
         _r = r
 
-        # Fetch any new evidence URLs submitted with the appeal
+        # Fetch appeal evidence at the outer (leader) level
         appeal_urls = json.loads(appeal.get("evidence_urls", "[]"))
         appeal_evidence = []
         for url in appeal_urls[:3]:
             try:
                 content = gl.nondet.web_scrape(url)
-                snippet = str(content)[:600] if content else "[no content]"
-                appeal_evidence.append(f"URL: {url}\n{snippet}")
+                if hasattr(content, 'text'):
+                    text = str(content.text)[:600]
+                else:
+                    text = str(content)[:600]
+                appeal_evidence.append(f"URL: {url}\n{text}")
             except Exception:
                 appeal_evidence.append(f"URL: {url}\n[fetch failed]")
-        appeal_evidence_block = "\n---\n".join(appeal_evidence) if appeal_evidence else "[no appeal evidence fetched]"
+        appeal_evidence_block = (
+            "\n---\n".join(appeal_evidence)
+            if appeal_evidence else "[no appeal evidence fetched]"
+        )
 
         prompt = (
             "You are reviewing an appeal for a procurement evaluation on Procurement Consensus.\n\n"
@@ -538,9 +601,7 @@ class ProcurementConsensusProtocol(gl.Contract):
             if not isinstance(data, dict):
                 return False
 
-            # Structural checks
-            valid_verdicts = ("appeal_granted", "appeal_rejected", "manual_review_required")
-            if data.get("appeal_verdict") not in valid_verdicts:
+            if data.get("appeal_verdict") not in ("appeal_granted", "appeal_rejected", "manual_review_required"):
                 return False
             if not isinstance(data.get("final_recommendation_changed"), bool):
                 return False
@@ -548,14 +609,13 @@ class ProcurementConsensusProtocol(gl.Contract):
             if not isinstance(confidence, int) or confidence < 0 or confidence > 100:
                 return False
 
-            # Substantive check: if the appeal is granted and recommendation changed,
-            # the new winner must be a real bid in this round
+            # If the appeal grants a new winner, that bid must exist in this round
             if data.get("final_recommendation_changed", False):
                 new_id = data.get("new_recommended_bid_id")
                 if new_id not in _r["bid_ids"]:
                     return False
 
-            # Fetch and cross-check appeal evidence independently
+            # Independent cross-check of the appeal's merit
             val_prompt = (
                 "You are an independent appeal validator for a procurement protocol.\n\n"
                 f"Round: {_r['title']}\n"
@@ -573,7 +633,6 @@ class ProcurementConsensusProtocol(gl.Contract):
                     return False
                 leader_upheld = data.get("appeal_verdict") == "appeal_granted"
                 validator_upheld = bool(val_result.get("upheld", False))
-                # Both must agree on whether the appeal has merit
                 if leader_upheld != validator_upheld:
                     return False
             except Exception:
@@ -591,7 +650,6 @@ class ProcurementConsensusProtocol(gl.Contract):
             original_eval["recommended_bid_id"] = int(
                 appeal_result.get("new_recommended_bid_id", original_eval["recommended_bid_id"])
             )
-            # Update recommended_supplier to match the new winning bid
             new_bid_raw = self.bids.get(str(original_eval["recommended_bid_id"]), "")
             if new_bid_raw:
                 new_bid = json.loads(new_bid_raw)
@@ -606,55 +664,60 @@ class ProcurementConsensusProtocol(gl.Contract):
     def finalize_recommendation(self, round_id: u256) -> None:
         key = str(int(round_id))
         raw = self.rounds.get(key, "")
-        assert raw, "Round not found"
+        if not raw:
+            raise gl.vm.UserError("Round not found")
         r = json.loads(raw)
-        assert r["buyer"] == str(gl.message.sender_address), "Only buyer can finalize"
-        assert r["status"] in ("recommendation_issued", "appeal_window_open"), "No recommendation to finalize"
+        if r["buyer"] != str(gl.message.sender_address):
+            raise gl.vm.UserError("Only buyer can finalize")
+        if r["status"] not in ("recommendation_issued", "appeal_window_open"):
+            raise gl.vm.UserError("No recommendation to finalize")
 
         raw_eval = self.evaluations.get(key, "")
-        assert raw_eval, "No evaluation found"
+        if not raw_eval:
+            raise gl.vm.UserError("No evaluation found")
         eval_data = json.loads(raw_eval)
+
+        # Read escrow → zero it → save state → then transfer (reentrancy-safe ordering)
+        locked = self._get_escrow(r)
+        buyer = r["buyer"]
+        winner_address = str(eval_data.get("recommended_supplier", ""))
+        award = eval_data.get("verdict") == "award_recommended"
 
         r["status"] = "finalized"
         r["finalized"] = True
+        self._set_escrow(r, u256(0))
         self.rounds[key] = json.dumps(r)
 
-        # Release escrow: pay winner or refund buyer
-        locked = int(self.escrow.get(key, u256(0)))
-        if locked > 0:
-            self.escrow[key] = u256(0)
-            r["escrow_amount"] = 0
-            if eval_data.get("verdict") == "award_recommended":
-                winner_address = str(eval_data.get("recommended_supplier", ""))
-                if winner_address:
-                    gl.transfer(winner_address, locked)
-                else:
-                    gl.transfer(r["buyer"], locked)
+        if locked > u256(0):
+            if award and winner_address:
+                _send_gen(winner_address, locked)
             else:
-                # No valid winner — refund buyer
-                gl.transfer(r["buyer"], locked)
+                _send_gen(buyer, locked)
 
-    # ─── Read Methods ─────────────────────────────────────────────────────────────
+    # ── View methods ──────────────────────────────────────────────────────────
 
     @gl.public.view
     def get_round(self, round_id: u256) -> str:
         key = str(int(round_id))
         raw = self.rounds.get(key, "")
-        assert raw, "Round not found"
+        if not raw:
+            raise gl.vm.UserError("Round not found")
         return raw
 
     @gl.public.view
     def get_bid(self, bid_id: u256) -> str:
         key = str(int(bid_id))
         raw = self.bids.get(key, "")
-        assert raw, "Bid not found"
+        if not raw:
+            raise gl.vm.UserError("Bid not found")
         return raw
 
     @gl.public.view
     def get_round_bids(self, round_id: u256) -> str:
         key = str(int(round_id))
         raw = self.rounds.get(key, "")
-        assert raw, "Round not found"
+        if not raw:
+            raise gl.vm.UserError("Round not found")
         r = json.loads(raw)
         result = []
         for bid_id in r["bid_ids"]:
@@ -680,12 +743,6 @@ class ProcurementConsensusProtocol(gl.Contract):
         return raw
 
     @gl.public.view
-    def get_escrow(self, round_id: u256) -> str:
-        key = str(int(round_id))
-        locked = int(self.escrow.get(key, u256(0)))
-        return json.dumps({"round_id": int(round_id), "locked_amount": locked})
-
-    @gl.public.view
     def get_all_rounds(self) -> str:
         result = []
         counter = int(self.round_counter)
@@ -707,7 +764,7 @@ class ProcurementConsensusProtocol(gl.Contract):
                     "created_at": r["created_at"],
                     "finalized": r["finalized"],
                     "bid_count": len(r["bid_ids"]),
-                    "escrow_amount": r.get("escrow_amount", 0),
+                    "escrow_deposited": r.get("escrow_deposited", "0"),
                 })
         return json.dumps(result)
 
@@ -729,7 +786,7 @@ class ProcurementConsensusProtocol(gl.Contract):
                         "created_at": r["created_at"],
                         "finalized": r["finalized"],
                         "bid_count": len(r["bid_ids"]),
-                        "escrow_amount": r.get("escrow_amount", 0),
+                        "escrow_deposited": r.get("escrow_deposited", "0"),
                     })
         return json.dumps(result)
 

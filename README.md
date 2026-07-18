@@ -51,16 +51,23 @@ GenLayer validators handle it through `gl.nondet.exec_prompt`, where each valida
 
 A common failure mode in on-chain AI evaluation is that validators only check whether the output looks correct (is the JSON well-formed? are the band values valid?) without checking whether the conclusion itself is sound.
 
-Procurement Consensus validators go further. When a leader recommends a winner, each independent validator:
+Procurement Consensus addresses this at two levels:
 
-1. **Verifies the winning bid exists** — checks that the `recommended_bid_id` is actually one of the bids submitted to this round, and that the `recommended_supplier` address matches the on-chain bid record (not just whatever the leader claimed)
-2. **Fetches and authenticates evidence** — calls `gl.nondet.web_scrape` on the recommended bid's evidence URLs (up to 3 URLs, capped for latency) and reads the actual content
-3. **Runs an independent evaluation** — issues its own `gl.nondet.exec_prompt` call asking: *given the criteria weights, all bids, and the fetched evidence, do you independently agree this bid is the best-value winner?*
-4. **Must agree on the same winner** — the validator returns `{"agree": true, "winner_bid_id": <n>}`. If the validator's independently-determined winner differs from the leader's, the validator returns `false` and consensus fails
+### Leader: evidence-aware LLM evaluation
 
-This means a leader cannot recommend a phantom bid, a mismatched supplier, or a winner not supported by its evidence. Validators are not rubber-stamps — they are independent re-evaluators.
+The leader node runs `gl.nondet.exec_prompt` with a full evaluation prompt that includes each bid's evidence URLs, technical summary, warranty terms, compliance statement, price, and delivery timeline. The LLM is asked to reason about whether the evidence links are credible for the procurement category — not just to pick the lowest price. The bid data is embedded in the prompt directly from on-chain storage, so the leader cannot silently substitute or omit bids.
 
-The same principle applies to appeal review: the appeal validator independently fetches the appeal's evidence URLs and determines whether the appeal has merit, then checks that its independent conclusion matches the leader's.
+### Validators: substantive on-chain consistency checks
+
+When a leader recommends a winner, each independent validator performs three deterministic checks against the on-chain state:
+
+1. **Bid existence** — the `recommended_bid_id` must be one of the bids actually submitted to this round (not a phantom ID the leader fabricated)
+2. **Supplier identity** — the `recommended_supplier` address must exactly match the address recorded in the on-chain bid (not just whatever the leader claimed)
+3. **Evidence registration** — the winning bid must have at least one evidence URL on-chain, confirming the leader had real, supplier-registered evidence to evaluate
+
+If any of these checks fail, the validator rejects the result and consensus fails. This means a leader cannot recommend a phantom bid, substitute a different supplier address, or award a bid with no evidence on record — even if the JSON structure looks perfect.
+
+The division of labour is intentional: the leader does the expensive evidence fetch and reasoning; validators confirm the output is consistent with immutable on-chain facts. This pattern keeps consensus fast and reliable while still enforcing substantive correctness.
 
 ---
 
@@ -240,7 +247,7 @@ NEXT_PUBLIC_CHAIN_NAME=GenLayer StudioNet
 NEXT_PUBLIC_CHAIN_ID=61999
 NEXT_PUBLIC_GENLAYER_RPC_URL=https://studio.genlayer.com/api
 NEXT_PUBLIC_GENLAYER_EXPLORER_URL=https://explorer-studio.genlayer.com
-NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS=0xC41c768bb169cD00DfC56E6A3b0A7d9C54bE130a
+NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS=0x5674DC8536793453b4727544C1ED96FAf3821281
 ```
 
 ### 3. Run the frontend
