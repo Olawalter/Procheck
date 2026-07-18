@@ -53,21 +53,23 @@ A common failure mode in on-chain AI evaluation is that validators only check wh
 
 Procurement Consensus addresses this at two levels:
 
-### Leader: evidence-aware LLM evaluation
+### Leader: full LLM evaluation
 
-The leader node runs `gl.nondet.exec_prompt` with a full evaluation prompt that includes each bid's evidence URLs, technical summary, warranty terms, compliance statement, price, and delivery timeline. The LLM is asked to reason about whether the evidence links are credible for the procurement category — not just to pick the lowest price. The bid data is embedded in the prompt directly from on-chain storage, so the leader cannot silently substitute or omit bids.
+The leader node runs `gl.nondet.exec_prompt` with the complete procurement context — round criteria and weights, all submitted bids (price, delivery, technical summary, warranty, compliance statement, evidence URLs) — and produces a structured award recommendation.
 
-### Validators: substantive on-chain consistency checks
+### Validators: independent LLM re-evaluation (Equivalence Principle)
 
-When a leader recommends a winner, each independent validator performs three deterministic checks against the on-chain state:
+Each of the four independent validators runs **its own `gl.nondet.exec_prompt`** call asking whether the leader's proposed winner is a reasonable best-value selection, given the same on-chain bid data. This is the GenLayer Equivalence Principle in action: validators do not re-run identical deterministic logic — they independently reason about the same procurement question and converge on the same answer.
+
+Before the LLM check, each validator first runs three deterministic guard checks:
 
 1. **Bid existence** — the `recommended_bid_id` must be one of the bids actually submitted to this round (not a phantom ID the leader fabricated)
 2. **Supplier identity** — the `recommended_supplier` address must exactly match the address recorded in the on-chain bid (not just whatever the leader claimed)
-3. **Evidence registration** — the winning bid must have at least one evidence URL on-chain, confirming the leader had real, supplier-registered evidence to evaluate
+3. **Evidence registration** — the winning bid must have at least one evidence URL on-chain, confirming the supplier provided verifiable evidence
 
-If any of these checks fail, the validator rejects the result and consensus fails. This means a leader cannot recommend a phantom bid, substitute a different supplier address, or award a bid with no evidence on record — even if the JSON structure looks perfect.
+If any deterministic check fails, the validator rejects without calling the LLM. If all three pass, the validator asks: *"Is this a reasonable best-value selection given the bid details?"* — and only returns `true` if the LLM agrees.
 
-The division of labour is intentional: the leader does the expensive evidence fetch and reasoning; validators confirm the output is consistent with immutable on-chain facts. This pattern keeps consensus fast and reliable while still enforcing substantive correctness.
+A leader cannot win consensus by recommending a phantom bid, a mismatched supplier, or a winner that independent LLMs would not also endorse. Validators are not rubber-stamps — they are independent evaluators.
 
 ---
 
@@ -247,7 +249,7 @@ NEXT_PUBLIC_CHAIN_NAME=GenLayer StudioNet
 NEXT_PUBLIC_CHAIN_ID=61999
 NEXT_PUBLIC_GENLAYER_RPC_URL=https://studio.genlayer.com/api
 NEXT_PUBLIC_GENLAYER_EXPLORER_URL=https://explorer-studio.genlayer.com
-NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS=0x5674DC8536793453b4727544C1ED96FAf3821281
+NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS=0xd6388B8212421127766FbF9085Dde523532B3f31
 ```
 
 ### 3. Run the frontend

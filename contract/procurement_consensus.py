@@ -374,17 +374,21 @@ class ProcurementConsensusProtocol(gl.Contract):
         )
 
         # Pre-build plain Python dicts for the validator closure.
-        # TreeMaps cannot be accessed from inside validator_fn (restricted context),
-        # so we snapshot the bid data into plain dicts before defining the closures.
+        # TreeMaps cannot be accessed from inside validator_fn, so we snapshot
+        # bid data into plain dicts here before defining the closures.
         _valid_bid_ids = valid_bid_ids
-        _bid_suppliers = {}   # bid_id (int) → supplier address (str)
-        _bid_has_evidence = {}  # bid_id (int) → bool
+        _bid_suppliers = {}
+        _bid_has_evidence = {}
         for bid_id in valid_bid_ids:
             raw_b = self.bids.get(str(bid_id), "")
             if raw_b:
                 b = json.loads(raw_b)
                 _bid_suppliers[bid_id] = b.get("supplier", "")
                 _bid_has_evidence[bid_id] = len(json.loads(b.get("evidence_urls", "[]"))) > 0
+
+        # Also capture plain strings for the validator's independent LLM check.
+        _title = r["title"]
+        _captured_bids_text = bids_text
 
         def leader_fn():
             return gl.nondet.exec_prompt(prompt, response_format='json')
@@ -415,22 +419,42 @@ class ProcurementConsensusProtocol(gl.Contract):
             if data.get("risk_band") not in ["high", "medium", "low", "minimal"]:
                 return False
 
-            # ── Substantive on-chain consistency checks (deterministic only) ─
+            # ── Deterministic on-chain consistency checks ────────────────────
             verdict = data.get("verdict")
-            if verdict == "award_recommended":
-                recommended_bid_id = data.get("recommended_bid_id")
-                recommended_supplier = str(data.get("recommended_supplier", ""))
+            recommended_bid_id = data.get("recommended_bid_id")
+            recommended_supplier = str(data.get("recommended_supplier", ""))
 
-                # 1. Recommended bid must be one of the bids actually submitted to this round
+            if verdict == "award_recommended":
+                # Bid must be one actually submitted to this round
                 if recommended_bid_id not in _valid_bid_ids:
                     return False
-
-                # 2. Recommended supplier must match the on-chain bid record
+                # Supplier must match the on-chain bid record
                 if _bid_suppliers.get(recommended_bid_id, "") != recommended_supplier:
                     return False
-
-                # 3. Winning bid must have registered evidence URLs on-chain
+                # Winning bid must have registered evidence URLs on-chain
                 if not _bid_has_evidence.get(recommended_bid_id, False):
+                    return False
+
+                # ── Independent LLM re-evaluation (GenLayer Equivalence Principle)
+                # Each validator independently reasons about the winner using the same
+                # on-chain bid data the leader saw. This is the core GenLayer strength:
+                # non-deterministic agreement on a substantive procurement judgement.
+                spot_prompt = (
+                    f"Procurement: {_title}\n\n"
+                    f"Submitted bids:\n{_captured_bids_text}\n\n"
+                    f"The proposed winner is Bid {recommended_bid_id} "
+                    f"(Supplier {recommended_supplier}).\n"
+                    "Is this a reasonable best-value selection given the bid details above? "
+                    "Consider price, delivery, technical quality, compliance, and evidence provided. "
+                    'Reply ONLY with valid JSON: {"agree": true} or {"agree": false}'
+                )
+                try:
+                    spot = gl.nondet.exec_prompt(spot_prompt, response_format='json')
+                    if not isinstance(spot, dict):
+                        return False
+                    if not spot.get("agree", False):
+                        return False
+                except Exception:
                     return False
 
             return True
