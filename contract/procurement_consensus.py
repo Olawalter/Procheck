@@ -375,18 +375,18 @@ class ProcurementConsensusProtocol(gl.Contract):
 
         # Pre-build plain Python dicts for the validator closure.
         # TreeMaps cannot be accessed from inside validator_fn, so we snapshot
-        # bid data into plain dicts here before defining the closures.
+        # all bid data into plain dicts and lists before defining the closures.
         _valid_bid_ids = valid_bid_ids
         _bid_suppliers = {}
-        _bid_has_evidence = {}
+        _bid_evidence_urls = {}  # bid_id → list of URL strings
         for bid_id in valid_bid_ids:
             raw_b = self.bids.get(str(bid_id), "")
             if raw_b:
                 b = json.loads(raw_b)
                 _bid_suppliers[bid_id] = b.get("supplier", "")
-                _bid_has_evidence[bid_id] = len(json.loads(b.get("evidence_urls", "[]"))) > 0
+                _bid_evidence_urls[bid_id] = json.loads(b.get("evidence_urls", "[]"))
 
-        # Also capture plain strings for the validator's independent LLM check.
+        # Plain strings for the validator's independent LLM check.
         _title = r["title"]
         _captured_bids_text = bids_text
 
@@ -431,21 +431,37 @@ class ProcurementConsensusProtocol(gl.Contract):
                 # Supplier must match the on-chain bid record
                 if _bid_suppliers.get(recommended_bid_id, "") != recommended_supplier:
                     return False
-                # Winning bid must have registered evidence URLs on-chain
-                if not _bid_has_evidence.get(recommended_bid_id, False):
+                # Winning bid must have at least one evidence URL registered on-chain
+                winner_urls = _bid_evidence_urls.get(recommended_bid_id, [])
+                if not winner_urls:
                     return False
 
-                # ── Independent LLM re-evaluation (GenLayer Equivalence Principle)
-                # Each validator independently reasons about the winner using the same
-                # on-chain bid data the leader saw. This is the core GenLayer strength:
-                # non-deterministic agreement on a substantive procurement judgement.
+                # ── Fetch and authenticate evidence (GenLayer web scrape) ─────
+                # Each validator independently fetches the winner's evidence URL
+                # and reads its content. This authenticates that the evidence
+                # actually exists and is accessible — not just that a URL was
+                # registered on-chain.
+                evidence_text = "[evidence fetch failed]"
+                try:
+                    raw = gl.nondet.web_scrape(winner_urls[0])
+                    evidence_text = str(raw.text)[:1000] if hasattr(raw, 'text') else str(raw)[:1000]
+                except Exception:
+                    pass  # fetch failure is surfaced to the LLM below
+
+                # ── Independent LLM re-evaluation with fetched evidence ───────
+                # Each validator independently reasons about the winner using the
+                # on-chain bid data AND the live-fetched evidence content.
+                # Non-deterministic agreement on a substantive procurement
+                # judgement — the GenLayer Equivalence Principle applied.
                 spot_prompt = (
                     f"Procurement: {_title}\n\n"
                     f"Submitted bids:\n{_captured_bids_text}\n\n"
                     f"The proposed winner is Bid {recommended_bid_id} "
-                    f"(Supplier {recommended_supplier}).\n"
-                    "Is this a reasonable best-value selection given the bid details above? "
-                    "Consider price, delivery, technical quality, compliance, and evidence provided. "
+                    f"(Supplier {recommended_supplier}).\n\n"
+                    f"Evidence fetched from {winner_urls[0]}:\n{evidence_text}\n\n"
+                    "Does the fetched evidence credibly support this supplier's claims "
+                    "for this procurement? And is this a reasonable best-value selection "
+                    "given price, delivery, quality, and compliance? "
                     'Reply ONLY with valid JSON: {"agree": true} or {"agree": false}'
                 )
                 try:
@@ -496,6 +512,28 @@ class ProcurementConsensusProtocol(gl.Contract):
         else:
             r["status"] = "appeal_window_open"
             self.rounds[round_key] = json.dumps(r)
+
+    @gl.public.write
+    def close_appeal_window(self, round_id: u256) -> None:
+        """
+        Close the appeal window when no appeal has been filed.
+        Callable by anyone — transitions the round to recommendation_issued
+        so that finalize_recommendation can be called to release escrow.
+        In a production system this would be time-gated (block timestamp);
+        on StudioNet the appeal window duration is enforced at the UI layer.
+        """
+        key = str(int(round_id))
+        raw = self.rounds.get(key, "")
+        if not raw:
+            raise gl.vm.UserError("Round not found")
+        r = json.loads(raw)
+        if r["status"] != "appeal_window_open":
+            raise gl.vm.UserError("No open appeal window to close")
+        # Ensure no appeal has been filed
+        if self.appeals.get(key, ""):
+            raise gl.vm.UserError("An appeal is already filed — use request_appeal_review instead")
+        r["status"] = "recommendation_issued"
+        self.rounds[key] = json.dumps(r)
 
     # ── Appeal ────────────────────────────────────────────────────────────────
 
@@ -691,10 +729,12 @@ class ProcurementConsensusProtocol(gl.Contract):
         if not raw:
             raise gl.vm.UserError("Round not found")
         r = json.loads(raw)
-        if r["buyer"] != str(gl.message.sender_address):
-            raise gl.vm.UserError("Only buyer can finalize")
-        if r["status"] not in ("recommendation_issued", "appeal_window_open"):
-            raise gl.vm.UserError("No recommendation to finalize")
+        # Anyone can finalize once the recommendation is issued and the appeal
+        # window has closed (status = recommendation_issued). The contract
+        # determines the recipient automatically — the caller cannot influence
+        # where the escrow goes.
+        if r["status"] != "recommendation_issued":
+            raise gl.vm.UserError("Round is not ready to finalize: appeal window may still be open or round is in an earlier state")
 
         raw_eval = self.evaluations.get(key, "")
         if not raw_eval:

@@ -79,17 +79,25 @@ Buyers can lock GEN onchain with each procurement round. The escrow is held by t
 
 | Outcome | What happens to the escrow |
 |---|---|
-| `award_recommended` → buyer finalizes | Transferred to the winning supplier's address |
-| `no_valid_bid` / `insufficient_evidence` / `unverifiable` | Refunded to buyer automatically |
+| `award_recommended` → finalized | Transferred to the winning supplier's address |
+| `no_valid_bid` / `insufficient_evidence` / `unverifiable` | Refunded to buyer on finalization |
 | Round cancelled (before any bids) | Refunded to buyer immediately |
-| Buyer finalizes with no valid winner | Refunded to buyer |
+| Finalized with no valid winner | Refunded to buyer |
+
+**Appeal window and automatic release flow:**
+
+1. After evaluation, the round enters `appeal_window_open` — any party may file a structured appeal during this period
+2. Once the window has elapsed with no appeal, **anyone** calls `close_appeal_window(round_id)` — this transitions the round to `recommendation_issued`
+3. **Anyone** then calls `finalize_recommendation(round_id)` — the contract computes the recipient automatically and executes the transfer; the caller has no influence over where the escrow goes
+
+This means neither the buyer nor the supplier can block the release: once the appeal window closes, any third party can trigger the finalization. The GenLayer contract VM does not expose a block timestamp, so the time window is enforced at the application layer; the on-chain logic enforces the payment routing automatically.
 
 **How to deposit escrow:**
 
 1. On the Create Round page, enter a whole GEN amount in the **GEN Escrow** field — it is sent as native value with the `create_round` transaction
 2. Alternatively, call `deposit_escrow(round_id)` separately with GEN value to add more after creation
 
-The escrow amount is visible on the round detail page. No manual release is required — finalization triggers the transfer automatically.
+The escrow amount is visible on the round detail page.
 
 ---
 
@@ -249,7 +257,7 @@ NEXT_PUBLIC_CHAIN_NAME=GenLayer StudioNet
 NEXT_PUBLIC_CHAIN_ID=61999
 NEXT_PUBLIC_GENLAYER_RPC_URL=https://studio.genlayer.com/api
 NEXT_PUBLIC_GENLAYER_EXPLORER_URL=https://explorer-studio.genlayer.com
-NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS=0xd6388B8212421127766FbF9085Dde523532B3f31
+NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS=0x23BA913e13176cea97e9634Cf1096977336dB3A9
 ```
 
 ### 3. Run the frontend
@@ -309,7 +317,8 @@ GenLayer validators compare all three bids against the criteria. Takes 30–90 s
 | `submit_bid(round_id, ...)` | Submit a bid packet |
 | `revise_bid(bid_id, ...)` | Revise your bid before close |
 | `request_evaluation(round_id)` | Trigger validator consensus evaluation |
-| `finalize_recommendation(round_id)` | Buyer accepts and finalizes the result |
+| `close_appeal_window(round_id)` | Close the appeal window when no appeal was filed (callable by anyone) |
+| `finalize_recommendation(round_id)` | Finalize and release escrow — callable by anyone once appeal window is closed |
 | `cancel_round(round_id)` | Cancel round (buyer only, before bids) — refunds escrow |
 | `deposit_escrow(round_id)` | Deposit additional GEN escrow after round creation (payable) |
 | `file_appeal(round_id, basis, statement, evidence_urls)` | File a structured appeal |

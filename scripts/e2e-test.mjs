@@ -386,6 +386,12 @@ async function handleEvalResult(evalResult, roundId, bidA_id, bidB_id) {
   console.log(`  Bid ID correct  : ${bidCorrect ? "✓ YES (Bid A)" : `✗ NO — got Bid ${evalResult.recommended_bid_id}`}`);
   console.log(`  Address correct : ${winnerCorrect ? "✓ YES" : "✗ NO"}`);
 
+  step("Close Appeal Window — transitions round to recommendation_issued");
+  log(buyer, "  Closing appeal window (no appeal filed)…");
+  await send(buyer, "close_appeal_window", [roundId]);
+  const postClose = await readContract("get_round", [roundId]);
+  log(buyer, `  round status  : ${postClose.status}`);
+
   step("Finalize Recommendation — triggers escrow release");
   const roundBefore = await readContract("get_round", [roundId]);
   log(buyer, `  escrow before : ${roundBefore.escrow_deposited ?? "0"} wei`);
