@@ -836,11 +836,12 @@ class ProcurementConsensusProtocol(gl.Contract):
     def get_rounds_by_buyer(self, buyer_address: str) -> str:
         result = []
         counter = int(self.round_counter)
+        needle = buyer_address.lower()
         for i in range(1, counter + 1):
             raw = self.rounds.get(str(i), "")
             if raw:
                 r = json.loads(raw)
-                if r["buyer"] == buyer_address:
+                if r["buyer"].lower() == needle:
                     result.append({
                         "round_id": r["round_id"],
                         "title": r["title"],
@@ -858,11 +859,12 @@ class ProcurementConsensusProtocol(gl.Contract):
     def get_bids_by_supplier(self, supplier_address: str) -> str:
         result = []
         counter = int(self.bid_counter)
+        needle = supplier_address.lower()
         for i in range(1, counter + 1):
             raw = self.bids.get(str(i), "")
             if raw:
                 b = json.loads(raw)
-                if b["supplier"] == supplier_address:
+                if b["supplier"].lower() == needle:
                     result.append({
                         "bid_id": b["bid_id"],
                         "round_id": b["round_id"],

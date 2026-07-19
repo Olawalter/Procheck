@@ -154,7 +154,17 @@ export default function RoundDetailPage() {
                     </Button>
                   </Link>
                 )}
-                {(round.status === "recommendation_issued" || round.status === "appeal_window_open") && (
+                {round.status === "appeal_window_open" && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={actionLoading}
+                    onClick={() => doAction("close_appeal_window", [roundId], "Appeal window closed")}
+                  >
+                    Close Appeal Window
+                  </Button>
+                )}
+                {round.status === "recommendation_issued" && (
                   <Button
                     size="sm"
                     variant="gold"
