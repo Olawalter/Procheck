@@ -606,54 +606,61 @@ class ProcurementConsensusProtocol(gl.Contract):
         original_eval = json.loads(raw_eval)
 
         bids_text = self._build_bids_text(r["bid_ids"])
-        _r = r
 
-        # Fetch appeal evidence at the outer (leader) level
-        appeal_urls = json.loads(appeal.get("evidence_urls", "[]"))
-        appeal_evidence = []
-        for url in appeal_urls[:3]:
-            try:
-                content = gl.nondet.web_scrape(url)
-                if hasattr(content, 'text'):
-                    text = str(content.text)[:600]
-                else:
-                    text = str(content)[:600]
-                appeal_evidence.append(f"URL: {url}\n{text}")
-            except Exception:
-                appeal_evidence.append(f"URL: {url}\n[fetch failed]")
-        appeal_evidence_block = (
-            "\n---\n".join(appeal_evidence)
-            if appeal_evidence else "[no appeal evidence fetched]"
-        )
-
-        prompt = (
-            "You are reviewing an appeal for a procurement evaluation on Procurement Consensus.\n\n"
-            f"ORIGINAL ROUND:\nTitle: {r['title']}\nCategory: {r['category']}\n"
-            f"Criteria weights: {r['criteria_weights']}\n"
-            f"Mandatory requirements: {r['mandatory_requirements']}\n\n"
-            f"ORIGINAL EVALUATION:\nVerdict: {original_eval['verdict']}\n"
-            f"Recommended bid ID: {original_eval['recommended_bid_id']}\n"
-            f"Confidence: {original_eval['confidence']}%\n"
-            f"Reason: {original_eval['short_reason']}\n\n"
-            f"APPEAL:\nFiled by: {appeal['filed_by']}\n"
-            f"Basis: {appeal['basis']}\nStatement: {appeal['statement']}\n\n"
-            f"Evidence fetched from appeal URLs:\n{appeal_evidence_block}\n\n"
-            f"ALL SUBMITTED BIDS:\n{bids_text}\n\n"
-            "Does the appeal introduce meaningful evidence that was overlooked or misread? "
-            "Should the recommendation change?\n\n"
-            'Return ONLY a valid JSON object:\n'
-            '{\n'
-            '  "appeal_verdict": "appeal_granted or appeal_rejected or manual_review_required",\n'
-            '  "final_recommendation_changed": true or false,\n'
-            '  "new_recommended_bid_id": <integer, same as original if unchanged>,\n'
-            '  "confidence": <integer 0-100>,\n'
-            '  "reason_code": "<short_snake_case_string>",\n'
-            '  "short_reason": "<max 240 chars>"\n'
-            '}\n'
-            "It is mandatory that you respond only using the JSON format above, nothing else."
-        )
+        # Pre-capture plain values for closures — no TreeMap reads inside leader/validator
+        _title = r["title"]
+        _category = r["category"]
+        _criteria_weights = r["criteria_weights"]
+        _mandatory_requirements = r["mandatory_requirements"]
+        _bid_ids = r["bid_ids"]
+        _appeal_basis = appeal["basis"]
+        _appeal_statement = appeal["statement"]
+        _appeal_filed_by = appeal["filed_by"]
+        _appeal_urls = json.loads(appeal.get("evidence_urls", "[]"))
+        _original_verdict = original_eval["verdict"]
+        _original_bid_id = original_eval["recommended_bid_id"]
+        _original_confidence = original_eval["confidence"]
+        _original_reason = original_eval["short_reason"]
+        _bids_text = bids_text
 
         def appeal_leader_fn():
+            # Fetch appeal evidence inside leader (gl.nondet.* must be inside run_nondet_unsafe)
+            appeal_evidence = []
+            for url in _appeal_urls[:2]:
+                try:
+                    content = gl.nondet.web_scrape(url)
+                    text = str(content.text)[:600] if hasattr(content, 'text') else str(content)[:600]
+                    appeal_evidence.append(f"URL: {url}\n{text}")
+                except Exception:
+                    appeal_evidence.append(f"URL: {url}\n[fetch failed]")
+            appeal_evidence_block = "\n---\n".join(appeal_evidence) if appeal_evidence else "[no appeal evidence]"
+
+            prompt = (
+                "You are reviewing an appeal for a procurement evaluation on Procurement Consensus.\n\n"
+                f"ORIGINAL ROUND:\nTitle: {_title}\nCategory: {_category}\n"
+                f"Criteria weights: {_criteria_weights}\n"
+                f"Mandatory requirements: {_mandatory_requirements}\n\n"
+                f"ORIGINAL EVALUATION:\nVerdict: {_original_verdict}\n"
+                f"Recommended bid ID: {_original_bid_id}\n"
+                f"Confidence: {_original_confidence}%\n"
+                f"Reason: {_original_reason}\n\n"
+                f"APPEAL:\nFiled by: {_appeal_filed_by}\n"
+                f"Basis: {_appeal_basis}\nStatement: {_appeal_statement}\n\n"
+                f"Evidence fetched from appeal URLs:\n{appeal_evidence_block}\n\n"
+                f"ALL SUBMITTED BIDS:\n{_bids_text}\n\n"
+                "Does the appeal introduce meaningful evidence that was overlooked or misread? "
+                "Should the recommendation change?\n\n"
+                'Return ONLY a valid JSON object:\n'
+                '{\n'
+                '  "appeal_verdict": "appeal_granted or appeal_rejected or manual_review_required",\n'
+                '  "final_recommendation_changed": true or false,\n'
+                '  "new_recommended_bid_id": <integer, same as original if unchanged>,\n'
+                '  "confidence": <integer 0-100>,\n'
+                '  "reason_code": "<short_snake_case_string>",\n'
+                '  "short_reason": "<max 240 chars>"\n'
+                '}\n'
+                "It is mandatory that you respond only using the JSON format above, nothing else."
+            )
             return gl.nondet.exec_prompt(prompt, response_format='json')
 
         def appeal_validator_fn(leaders_res) -> bool:
@@ -674,18 +681,17 @@ class ProcurementConsensusProtocol(gl.Contract):
             # If the appeal grants a new winner, that bid must exist in this round
             if data.get("final_recommendation_changed", False):
                 new_id = data.get("new_recommended_bid_id")
-                if new_id not in _r["bid_ids"]:
+                if new_id not in _bid_ids:
                     return False
 
             # Independent cross-check of the appeal's merit
             val_prompt = (
                 "You are an independent appeal validator for a procurement protocol.\n\n"
-                f"Round: {_r['title']}\n"
-                f"Original verdict: {original_eval['verdict']} — Bid {original_eval['recommended_bid_id']}\n"
-                f"Appeal basis: {appeal['basis']}\n"
-                f"Appeal statement: {appeal['statement']}\n\n"
-                f"Evidence fetched:\n{appeal_evidence_block}\n\n"
-                f"All bids:\n{bids_text}\n\n"
+                f"Round: {_title}\n"
+                f"Original verdict: {_original_verdict} — Bid {_original_bid_id}\n"
+                f"Appeal basis: {_appeal_basis}\n"
+                f"Appeal statement: {_appeal_statement}\n\n"
+                f"All bids:\n{_bids_text}\n\n"
                 "Does this appeal introduce substantive evidence that changes the outcome?\n"
                 'Reply with ONLY valid JSON: {"upheld": true or false}'
             )
