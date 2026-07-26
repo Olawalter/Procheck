@@ -84,7 +84,7 @@ if not isinstance(spot, dict) or not spot.get("agree", False):
 | `request_evaluation` (evidence fetch + independent LLM) | `0x5e840ea00ad3cc551809882cc362fdc261c46337961ddcc5f0442d7e17d9d56d` | ACCEPTED (status 5) |
 | Evaluation result | `award_recommended`, 98% confidence, Bid 1 winner | — |
 
-Explorer: https://explorer-studio.genlayer.com/address/0x7cEae8277734873efE0992eEe8185DdbBB856637
+Explorer: https://explorer-studio.genlayer.com/address/0x9F8a1BD375d51cEFcaaCc56A240C6800E5e24E8C
 
 ---
 
@@ -180,8 +180,8 @@ GenLayer's contract VM does not expose `block.timestamp` or any block-based time
 
 | Network | Contract Address |
 |---|---|
-| GenLayer StudioNet (chain ID 61999) | `0x7cEae8277734873efE0992eEe8185DdbBB856637` |
+| GenLayer StudioNet (chain ID 61999) | `0x9F8a1BD375d51cEFcaaCc56A240C6800E5e24E8C` |
 
-Explorer: https://explorer-studio.genlayer.com/address/0x7cEae8277734873efE0992eEe8185DdbBB856637
+Explorer: https://explorer-studio.genlayer.com/address/0x9F8a1BD375d51cEFcaaCc56A240C6800E5e24E8C
 
 Live app: https://procheck-theta.vercel.app
