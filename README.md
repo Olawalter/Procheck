@@ -61,15 +61,15 @@ The leader node runs `gl.nondet.exec_prompt` with the complete procurement conte
 
 Each of the four independent validators runs **its own `gl.nondet.exec_prompt`** call asking whether the leader's proposed winner is a reasonable best-value selection, given the same on-chain bid data. This is the GenLayer Equivalence Principle in action: validators do not re-run identical deterministic logic — they independently reason about the same procurement question and converge on the same answer.
 
-Before the LLM check, each validator first runs three deterministic guard checks:
+Before the LLM check, each validator runs five verification steps:
 
 1. **Bid existence** — the `recommended_bid_id` must be one of the bids actually submitted to this round (not a phantom ID the leader fabricated)
 2. **Supplier identity** — the `recommended_supplier` address must exactly match the address recorded in the on-chain bid (not just whatever the leader claimed)
-3. **Evidence registration** — the winning bid must have at least one evidence URL on-chain, confirming the supplier provided verifiable evidence
+3. **Evidence registration** — the winning bid must have at least one evidence URL on-chain, confirming the supplier provided verifiable evidence at submission time
+4. **Evidence fetch** (`gl.nondet.web_scrape`) — each validator independently fetches the winning bid's evidence URL and reads up to 1000 characters of live page content, authenticating that the evidence is real and accessible
+5. **Independent LLM re-evaluation** (`gl.nondet.exec_prompt`) — each validator calls the LLM with the fetched evidence content and all on-chain bid data, asking: *"Does the fetched evidence credibly support this supplier's claims? And is this a reasonable best-value selection?"* The validator only returns `true` if the LLM responds `{"agree": true}`
 
-If any deterministic check fails, the validator rejects without calling the LLM. If all three pass, the validator asks: *"Is this a reasonable best-value selection given the bid details?"* — and only returns `true` if the LLM agrees.
-
-A leader cannot win consensus by recommending a phantom bid, a mismatched supplier, or a winner that independent LLMs would not also endorse. Validators are not rubber-stamps — they are independent evaluators.
+If any step fails, the validator rejects without proceeding further. A leader cannot win consensus by recommending a phantom bid, a mismatched supplier, evidence-free bids, unreachable URLs, or a winner that independent LLMs would not also endorse after reviewing live evidence. Validators are not rubber-stamps — they are independent evaluators.
 
 ---
 
@@ -257,7 +257,7 @@ NEXT_PUBLIC_CHAIN_NAME=GenLayer StudioNet
 NEXT_PUBLIC_CHAIN_ID=61999
 NEXT_PUBLIC_GENLAYER_RPC_URL=https://studio.genlayer.com/api
 NEXT_PUBLIC_GENLAYER_EXPLORER_URL=https://explorer-studio.genlayer.com
-NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS=0x23BA913e13176cea97e9634Cf1096977336dB3A9
+NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS=0x9F8a1BD375d51cEFcaaCc56A240C6800E5e24E8C
 ```
 
 ### 3. Run the frontend
@@ -347,14 +347,64 @@ draft
   └─ open_round() ──► open_for_bids
                            └─ close_bids() ──► bid_submission_closed
                                                    └─ request_evaluation() ──► under_consensus_evaluation
-                                                                                    └─ [validators complete] ──► recommendation_issued
-                                                                                                                      ├─ finalize_recommendation() ──► finalized
-                                                                                                                      └─ [appeal filed] ──► appeal_window_open
+                                                                                    └─ [validators complete] ──► appeal_window_open
+                                                                                                                      ├─ [no appeal] close_appeal_window() ──► recommendation_issued
+                                                                                                                      │                                              └─ finalize_recommendation() ──► finalized
+                                                                                                                      └─ [appeal filed] file_appeal() ──► appeal_window_open
                                                                                                                                                └─ request_appeal_review() ──► appeal_under_review
                                                                                                                                                                                   └─ [reviewed] ──► finalized
 ```
 
 Edge-case verdicts: `no_valid_bid`, `tie_detected`, `insufficient_evidence`, `manual_review_required`, `unverifiable`
+
+---
+
+## Test Suite
+
+### Direct tests (35 passing)
+
+```bash
+pytest tests/direct/ -v
+```
+
+Covers four areas:
+
+| Class | Tests | What it verifies |
+|---|---|---|
+| `TestCreateRound` | 8 | Round creation, escrow locking, input validation, counter |
+| `TestRoundLifecycle` | 10 | Open/bid/close/cancel flows, access control, bid submission guards |
+| `TestValidatorGuards` | 10 | Deterministic checks inside `validator_fn`: verdict enum, confidence range, band values, phantom-bid rejection, supplier mismatch rejection, missing evidence URL |
+| `TestProfileLookup` | 7 | Case-insensitive buyer/supplier address matching |
+
+Tests use module-scoped `vm`/`contract` fixtures (one contract load per session) with per-test `snapshot`/`revert` isolation. `genvm-lint` reports 0 errors.
+
+### E2E test (live StudioNet)
+
+```bash
+node scripts/e2e-test.mjs
+```
+
+Runs the full lifecycle against the deployed contract with three real accounts (buyer + two suppliers). Verified transaction hashes from the last run:
+
+| Step | TX hash | Result |
+|---|---|---|
+| `create_round` + 1 GEN escrow | `0xf5a57a3d13e41f94b07a08d8f44e7a208e7107edaa32c516f47c1ebad4446981` | escrow locked |
+| `open_round` | `0x53171b99cb9abb2a57a85ae19d9db514ea805173e451c1fed5eee440ab48749a` | ✓ |
+| Supplier A `submit_bid` | `0xfc469c2a35e1c53ec358486816058d2c223042e7e5ab86e6965e66a168552020` | Bid 1 |
+| Supplier B `submit_bid` | `0x4209030038c451cf54d8a8afb341d6cb3d5657fe00be51386ec697020d2ef77f` | Bid 2 |
+| `close_bids` | `0xde8ecb5bd34d09c0b9b420cbf9bdfbfd0ab54723ec7c3509bab6b14555dd1f53` | ✓ |
+| `request_evaluation` | `0xa039a699b278cbec69d5a271b22de379a36d3b723afbb60dd071c8dd84e56fb8` | ✓ |
+| Consensus result | — | `award_recommended`, 100% confidence, Bid 1 (Supplier A) |
+| `close_appeal_window` | `0x4cb5db59283b0b5899340720c3270a65f1dd04cbb77a72dfc3cbef9d51c6b4a1` | ✓ |
+| `finalize_recommendation` | `0x272e4b323f0b7fd5cd81e990658f652a8e74dace4b2b8a99cbafbab1f2d6050d` | escrow → 0 |
+
+Explorer: https://explorer-studio.genlayer.com/address/0x9F8a1BD375d51cEFcaaCc56A240C6800E5e24E8C
+
+To resume a run that timed out during evaluation:
+
+```bash
+RESUME_ROUND_ID=<id> node scripts/e2e-test.mjs
+```
 
 ---
 
