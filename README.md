@@ -257,7 +257,7 @@ NEXT_PUBLIC_CHAIN_NAME=GenLayer StudioNet
 NEXT_PUBLIC_CHAIN_ID=61999
 NEXT_PUBLIC_GENLAYER_RPC_URL=https://studio.genlayer.com/api
 NEXT_PUBLIC_GENLAYER_EXPLORER_URL=https://explorer-studio.genlayer.com
-NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS=0x9F8a1BD375d51cEFcaaCc56A240C6800E5e24E8C
+NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS=0x04F5AB09eC3d00cdE2B82A2e28d5BE53a9A35979
 ```
 
 ### 3. Run the frontend
@@ -344,39 +344,44 @@ GenLayer validators compare all three bids against the criteria. Takes 30–90 s
 
 ```
 draft
-  └─ open_round() ──► open_for_bids
+  └─ open_round() ──► open_for_bids  [bid_deadline enforced on every submit_bid]
                            └─ close_bids() ──► bid_submission_closed
                                                    └─ request_evaluation() ──► under_consensus_evaluation
                                                                                     └─ [validators complete] ──► appeal_window_open
+                                                                                                                      │  (appeal_window seconds must elapse before window can close)
                                                                                                                       ├─ [no appeal] close_appeal_window() ──► recommendation_issued
                                                                                                                       │                                              └─ finalize_recommendation() ──► finalized
-                                                                                                                      └─ [appeal filed] file_appeal() ──► appeal_window_open
-                                                                                                                                               └─ request_appeal_review() ──► appeal_under_review
-                                                                                                                                                                                  └─ [reviewed] ──► finalized
+                                                                                                                      └─ [appeal filed] file_appeal() ──► appeal_under_review
+                                                                                                                                               └─ request_appeal_review() ──► recommendation_issued
+                                                                                                                                                                                  └─ finalize_recommendation() ──► finalized
 ```
 
-Edge-case verdicts: `no_valid_bid`, `tie_detected`, `insufficient_evidence`, `manual_review_required`, `unverifiable`
+Edge-case verdicts (immediate refund): `no_valid_bid`, `insufficient_evidence`, `unverifiable`, `manual_review_required`
 
 ---
 
 ## Test Suite
 
-### Direct tests (35 passing)
+### Direct tests (56 passing)
 
 ```bash
 pytest tests/direct/ -v
 ```
 
-Covers four areas:
+Covers eight test classes:
 
 | Class | Tests | What it verifies |
 |---|---|---|
 | `TestCreateRound` | 8 | Round creation, escrow locking, input validation, counter |
 | `TestRoundLifecycle` | 10 | Open/bid/close/cancel flows, access control, bid submission guards |
+| `TestDeadlineEnforcement` | 6 | Bid deadline rejection past cutoff, appeal window elapsed check, `appeal_opened_at` stored on evaluation |
+| `TestEvaluation` | 5 | LLM evaluation with mocked response, result storage, no-valid-bid refund |
+| `TestEscrowTransfers` | 5 | Escrow released to winner, refunded on no-valid-bid, cancel refund, permissionless finalize |
+| `TestAppealFlow` | 5 | Appeal filing, granted/rejected outcomes, outside-window rejection, invalid basis rejection |
 | `TestValidatorGuards` | 10 | Deterministic checks inside `validator_fn`: verdict enum, confidence range, band values, phantom-bid rejection, supplier mismatch rejection, missing evidence URL |
 | `TestProfileLookup` | 7 | Case-insensitive buyer/supplier address matching |
 
-Tests use module-scoped `vm`/`contract` fixtures (one contract load per session) with per-test `snapshot`/`revert` isolation. `genvm-lint` reports 0 errors.
+Tests use module-scoped `vm`/`contract` fixtures with per-test `snapshot`/`revert` isolation; `gl.message_raw['datetime']` is synced on every `vm.warp()` call for deadline enforcement tests. `genvm-lint` reports 0 errors.
 
 ### E2E test (live StudioNet)
 
@@ -398,7 +403,7 @@ Runs the full lifecycle against the deployed contract with three real accounts (
 | `close_appeal_window` | `0x4cb5db59283b0b5899340720c3270a65f1dd04cbb77a72dfc3cbef9d51c6b4a1` | ✓ |
 | `finalize_recommendation` | `0x272e4b323f0b7fd5cd81e990658f652a8e74dace4b2b8a99cbafbab1f2d6050d` | escrow → 0 |
 
-Explorer: https://explorer-studio.genlayer.com/address/0x9F8a1BD375d51cEFcaaCc56A240C6800E5e24E8C
+Explorer: https://explorer-studio.genlayer.com/address/0x04F5AB09eC3d00cdE2B82A2e28d5BE53a9A35979
 
 To resume a run that timed out during evaluation:
 
