@@ -81,10 +81,10 @@ if not isinstance(spot, dict) or not spot.get("agree", False):
 
 | Step | Transaction | Status |
 |---|---|---|
-| `request_evaluation` (evidence fetch + independent LLM) | `0x5e840ea00ad3cc551809882cc362fdc261c46337961ddcc5f0442d7e17d9d56d` | ACCEPTED (status 5) |
-| Evaluation result | `award_recommended`, 98% confidence, Bid 1 winner | — |
+| `request_evaluation` (evidence fetch + independent LLM) | `0xde3865c2c0b4070c9227b3a174c8b6f3d56572c9809fb06d8189c879b33891ef` | ACCEPTED |
+| Evaluation result | `award_recommended`, 100% confidence, Bid 7 (Supplier A) winner | — |
 
-Explorer: https://explorer-studio.genlayer.com/address/0x9F8a1BD375d51cEFcaaCc56A240C6800E5e24E8C
+Explorer: https://explorer-studio.genlayer.com/address/0x04F5AB09eC3d00cdE2B82A2e28d5BE53a9A35979
 
 ---
 
@@ -162,17 +162,33 @@ GEN is sent via `emit_transfer` on a `@gl.evm.contract_interface` stub — the c
 | Round cancelled before bids | Refunded to buyer immediately |
 | Finalized with no valid winner address | Refunded to buyer |
 
-#### Note on time enforcement
+#### On-chain time enforcement
 
-GenLayer's contract VM does not expose `block.timestamp` or any block-based time primitive. The appeal window duration is enforced at the application layer (the UI shows the deadline and prevents premature close). The on-chain sequencing — window must be explicitly closed before finalization can occur — is enforced by the contract's status machine.
+GenLayer injects an ISO timestamp into every transaction via `gl.message_raw["datetime"]`. The contract reads this with:
 
-### Verified transactions
+```python
+def _now_ts() -> int:
+    raw = gl.message_raw.get("datetime", "")
+    if raw:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return int(dt.timestamp())
+    return 0
+```
+
+`submit_bid` rejects bids past `bid_deadline`. `close_appeal_window` rejects calls before `appeal_opened_at + appeal_window` seconds have elapsed. Both checks are enforced fully on-chain.
+
+### Verified transactions (Round 4 — Laptop Procurement, new contract)
 
 | Step | Transaction | Result |
 |---|---|---|
-| `create_round` with 1 GEN escrow | `0xbd980c25225ff226ae1bd0a7ad197757894c21a0b63ef42a89ddba9591df1d2b` | `escrow_deposited: "1000000000000000000"` |
-| `close_appeal_window` | `0x93aec45ef465f88c731e5bb16318bd4a3618b4d1eef075cd262b4510ffee0070` | status → `recommendation_issued` |
-| `finalize_recommendation` | `0xafabfa98a71dfffa9483d39d5b8882075cd6d4794ae093add1e9b358d297d301` | `escrow_deposited: "0"`, GEN transferred to winner |
+| `create_round` with 1 GEN escrow | `0xf0e1426961194d885f1255f155b1459b6a49666c7c1e225ec0bba7dd8d381323` | `escrow_deposited: "1000000000000000000"` |
+| `open_round` | `0xe0811776472206e3c6b058829853f14012b1fda37ad11394ad27d092589c9f7b` | ✓ |
+| Supplier A `submit_bid` | `0x1b6cf78f5708df431011c4ea85ca8f68375dbd66522315438278cfbb2d37d4b9` | Bid 7 |
+| Supplier B `submit_bid` | `0x90329c770f34154951107280257cb3d1792eb4bfcd3579515c98d7834ccc3570` | Bid 8 |
+| `close_bids` | `0xe8e279205f7440df0a16bef6861ba74c19d732e17c5f85f8463dd9de2d87a8af` | ✓ |
+| `request_evaluation` | `0xde3865c2c0b4070c9227b3a174c8b6f3d56572c9809fb06d8189c879b33891ef` | `award_recommended`, 100% confidence, Bid 7 |
+| `close_appeal_window` | `0x8c034c261d87116de4cfc14f3a6dd08b7b2724ce161a69c97f29e76899edef47` | status → `recommendation_issued` |
+| `finalize_recommendation` | `0x6c226ba4ddcb77568063083d5b7383654f0aabd816c668c542e4938462249f34` | `escrow_deposited: "0"`, 1 GEN → Supplier A |
 
 ---
 
@@ -180,8 +196,8 @@ GenLayer's contract VM does not expose `block.timestamp` or any block-based time
 
 | Network | Contract Address |
 |---|---|
-| GenLayer StudioNet (chain ID 61999) | `0x9F8a1BD375d51cEFcaaCc56A240C6800E5e24E8C` |
+| GenLayer StudioNet (chain ID 61999) | `0x04F5AB09eC3d00cdE2B82A2e28d5BE53a9A35979` |
 
-Explorer: https://explorer-studio.genlayer.com/address/0x9F8a1BD375d51cEFcaaCc56A240C6800E5e24E8C
+Explorer: https://explorer-studio.genlayer.com/address/0x04F5AB09eC3d00cdE2B82A2e28d5BE53a9A35979
 
 Live app: https://procheck-theta.vercel.app

@@ -168,11 +168,11 @@ pytest tests/direct/test_procurement.py -v
 
 ## Summary
 
-| Requirement | Status | Key commit |
+| Requirement | Status | Evidence |
 |---|---|---|
-| Bid deadlines enforced | Done | `14a3453` |
-| Appeal window time-lock | Done | `14a3453` |
-| Validators verify substantive winner | Done | `14a3453` |
-| Escrow bound to on-chain bid | Done | `14a3453` |
-| Runtime test suite | Done (56/56) | `14a3453` |
-| New deployment | Done | `d141336` |
+| Bid deadlines enforced on-chain | Done | `14a3453`; `_now_ts()` vs `bid_deadline` in `submit_bid` |
+| Appeal window time-lock on-chain | Done | `14a3453`; `close_appeal_window` checks `appeal_opened_at + appeal_window` |
+| Validators verify substantive winner | Done | `14a3453`; 5-step `validator_fn`: bid existence, supplier match, evidence fetch, LLM re-evaluation |
+| Escrow bound to on-chain bid record | Done | `14a3453`; `finalize_recommendation` re-reads supplier from on-chain bid, cross-checks leader claim |
+| Runtime test suite (56/56) | Done | `14a3453`; `pytest tests/direct/test_procurement.py` |
+| Deployed contract with live rounds | Done | `0x04F5AB09eC3d00cdE2B82A2e28d5BE53a9A35979`; Round 4 `award_recommended` 100% confidence, escrow released `0x6c226ba4ddcb775…` |
