@@ -1,6 +1,19 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 from genlayer import *
 import json
+from datetime import datetime, timezone
+
+
+def _now_ts() -> int:
+    """Current UTC Unix timestamp from gl.message_raw['datetime'] (set by GenVM)."""
+    raw = gl.message_raw.get("datetime", "")
+    if raw:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return int(dt.timestamp())
+        except Exception:
+            pass
+    return 0
 
 
 # ── GEN emission ─────────────────────────────────────────────────────────────
@@ -230,6 +243,8 @@ class ProcurementConsensusProtocol(gl.Contract):
         r = json.loads(raw_round)
         if r["status"] != "open_for_bids":
             raise gl.vm.UserError("Round is not open for bids")
+        if _now_ts() > int(r["bid_deadline"]):
+            raise gl.vm.UserError("Bid deadline has passed")
         if price <= u256(0):
             raise gl.vm.UserError("Price must be positive")
         if len(technical_summary) < 50:
@@ -511,6 +526,7 @@ class ProcurementConsensusProtocol(gl.Contract):
                 _send_gen(buyer, locked)
         else:
             r["status"] = "appeal_window_open"
+            r["appeal_opened_at"] = _now_ts()
             self.rounds[round_key] = json.dumps(r)
 
     @gl.public.write
@@ -529,7 +545,10 @@ class ProcurementConsensusProtocol(gl.Contract):
         r = json.loads(raw)
         if r["status"] != "appeal_window_open":
             raise gl.vm.UserError("No open appeal window to close")
-        # Ensure no appeal has been filed
+        appeal_opened_at = int(r.get("appeal_opened_at", 0))
+        appeal_window = int(r.get("appeal_window", 0))
+        if _now_ts() < appeal_opened_at + appeal_window:
+            raise gl.vm.UserError("Appeal window has not elapsed yet")
         if self.appeals.get(key, ""):
             raise gl.vm.UserError("An appeal is already filed — use request_appeal_review instead")
         r["status"] = "recommendation_issued"
@@ -623,6 +642,14 @@ class ProcurementConsensusProtocol(gl.Contract):
         _original_reason = original_eval["short_reason"]
         _bids_text = bids_text
 
+        # Snapshot bid suppliers for appeal validator — TreeMap not accessible in closure
+        _appeal_bid_suppliers = {}
+        for _bid_id in r["bid_ids"]:
+            _raw_b = self.bids.get(str(_bid_id), "")
+            if _raw_b:
+                _b = json.loads(_raw_b)
+                _appeal_bid_suppliers[_bid_id] = _b.get("supplier", "")
+
         def appeal_leader_fn():
             # Fetch appeal evidence inside leader (gl.nondet.* must be inside run_nondet_unsafe)
             appeal_evidence = []
@@ -670,6 +697,7 @@ class ProcurementConsensusProtocol(gl.Contract):
             if not isinstance(data, dict):
                 return False
 
+            # ── All required output fields must be present and valid ──────────
             if data.get("appeal_verdict") not in ("appeal_granted", "appeal_rejected", "manual_review_required"):
                 return False
             if not isinstance(data.get("final_recommendation_changed"), bool):
@@ -677,14 +705,28 @@ class ProcurementConsensusProtocol(gl.Contract):
             confidence = data.get("confidence")
             if not isinstance(confidence, int) or confidence < 0 or confidence > 100:
                 return False
+            if not data.get("reason_code"):
+                return False
+            if not data.get("short_reason"):
+                return False
+            new_bid_id = data.get("new_recommended_bid_id")
+            if not isinstance(new_bid_id, int):
+                return False
 
-            # If the appeal grants a new winner, that bid must exist in this round
+            # ── If recommendation changes, validate replacement winner fully ──
             if data.get("final_recommendation_changed", False):
-                new_id = data.get("new_recommended_bid_id")
-                if new_id not in _bid_ids:
+                # Replacement bid must exist in this round
+                if new_bid_id not in _bid_ids:
+                    return False
+                # Replacement supplier address must match on-chain bid record
+                on_chain_supplier = _appeal_bid_suppliers.get(new_bid_id, "")
+                if not on_chain_supplier:
+                    return False
+                claimed_supplier = str(data.get("new_recommended_supplier", ""))
+                if claimed_supplier and claimed_supplier != on_chain_supplier:
                     return False
 
-            # Independent cross-check of the appeal's merit
+            # ── Independent LLM cross-check of the appeal's merit ────────────
             val_prompt = (
                 "You are an independent appeal validator for a procurement protocol.\n\n"
                 f"Round: {_title}\n"
@@ -750,8 +792,23 @@ class ProcurementConsensusProtocol(gl.Contract):
         # Read escrow → zero it → save state → then transfer (reentrancy-safe ordering)
         locked = self._get_escrow(r)
         buyer = r["buyer"]
-        winner_address = str(eval_data.get("recommended_supplier", ""))
         award = eval_data.get("verdict") == "award_recommended"
+
+        # Bind payout to explicit procurement terms: re-read supplier address
+        # from the on-chain bid record rather than trusting the evaluation JSON alone.
+        winner_address = ""
+        if award:
+            winner_bid_id = eval_data.get("recommended_bid_id", 0)
+            raw_winner_bid = self.bids.get(str(winner_bid_id), "")
+            if raw_winner_bid:
+                winner_bid = json.loads(raw_winner_bid)
+                eval_supplier = str(eval_data.get("recommended_supplier", ""))
+                onchain_supplier = winner_bid.get("supplier", "")
+                if eval_supplier.lower() == onchain_supplier.lower():
+                    winner_address = onchain_supplier
+                else:
+                    # Mismatch between consensus result and on-chain bid — refund buyer
+                    award = False
 
         r["status"] = "finalized"
         r["finalized"] = True
